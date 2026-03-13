@@ -418,19 +418,25 @@ export default function BarJoistCalculator() {
     setIOverridden(false);
   }, [joistId, span]);
 
+  // Tab 1: Mechanical zone additional loads
+  const [mechUL, setMechUL] = useState({ w: 0, a: 0, b: 0 });
+  const [mechPL, setMechPL] = useState({ P: 0, d: 0 });
+
   // Tab 1 analysis
   const tab1Results = useMemo(() => {
     if (!spanNum || !Eval || !Ival) return null;
     const totalLoad = liveLoad + deadLoad;
-    if (totalLoad <= 0) return null;
-    return analyzeBeam(
-      spanNum,
-      [{ w: totalLoad, a: 0, b: spanNum }],
-      [],
-      Eval,
-      Ival
-    );
-  }, [spanNum, liveLoad, deadLoad, Eval, Ival]);
+    if (totalLoad <= 0 && mechUL.w <= 0 && mechPL.P <= 0) return null;
+
+    const allUL = [];
+    if (totalLoad > 0) allUL.push({ w: totalLoad, a: 0, b: spanNum });
+    if (mechUL.w > 0 && mechUL.b > mechUL.a) allUL.push({ w: mechUL.w, a: mechUL.a, b: mechUL.b });
+
+    const allPL = [];
+    if (mechPL.P > 0) allPL.push(mechPL);
+
+    return analyzeBeam(spanNum, allUL, allPL, Eval, Ival);
+  }, [spanNum, liveLoad, deadLoad, Eval, Ival, mechUL, mechPL]);
 
   // Tab 2: Roof load (full span, psf with spacing)
   const [roofDL_psf, setRoofDL_psf] = useState(0);
@@ -471,6 +477,7 @@ export default function BarJoistCalculator() {
       joistId, span,
       liveLoad, deadLoad, Eval, Ival,
       llOverridden, dlOverridden, eOverridden, iOverridden,
+      mechUL, mechPL,
     },
     tab2: {
       roofDL_psf, roofLL_psf, joistSpacing,
@@ -516,6 +523,8 @@ export default function BarJoistCalculator() {
             if (t.dlOverridden !== undefined) setDlOverridden(t.dlOverridden);
             if (t.eOverridden !== undefined) setEOverridden(t.eOverridden);
             if (t.iOverridden !== undefined) setIOverridden(t.iOverridden);
+            if (t.mechUL) setMechUL(t.mechUL);
+            if (t.mechPL) setMechPL(t.mechPL);
           }, 100);
         }
         // Tab 2
@@ -794,10 +803,39 @@ export default function BarJoistCalculator() {
                 </div>
               </div>
 
+              {/* Mechanical Zone Additional Load */}
+              <div style={s.card}>
+                <div style={s.cardTitle}>Mechanical Zone Additional Load <span style={{ fontWeight: 400, fontSize: 10, color: "#64748b" }}>(included in joist capacity)</span></div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: "#38bdf8", fontWeight: 600, marginBottom: 6 }}>Uniform Load</div>
+                  <div style={s.grid(3)}>
+                    <CautionInput label="Magnitude (plf)" value={mechUL.w} onChange={v => setMechUL(prev => ({ ...prev, w: v }))} unit="plf" />
+                    <CautionInput label="Start" value={mechUL.a} onChange={v => setMechUL(prev => ({ ...prev, a: v }))} unit="ft" />
+                    <CautionInput label="End" value={mechUL.b} onChange={v => setMechUL(prev => ({ ...prev, b: v }))} unit="ft" />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, color: "#38bdf8", fontWeight: 600, marginBottom: 6 }}>Point Load</div>
+                  <div style={s.grid(2)}>
+                    <CautionInput label="Magnitude (lb)" value={mechPL.P} onChange={v => setMechPL(prev => ({ ...prev, P: v }))} unit="lb" />
+                    <CautionInput label="Location" value={mechPL.d} onChange={v => setMechPL(prev => ({ ...prev, d: v }))} unit="ft" />
+                  </div>
+                </div>
+              </div>
+
               {/* Beam Viz */}
               <div style={s.card}>
                 <div style={s.cardTitle}>Structural Model</div>
-                <BeamViz span={spanNum} uniformLoads={[{ w: liveLoad + deadLoad, a: 0, b: spanNum }]} pointLoads={[]} />
+                <BeamViz
+                  span={spanNum}
+                  uniformLoads={[
+                    { w: liveLoad + deadLoad, a: 0, b: spanNum },
+                    ...(mechUL.w > 0 && mechUL.b > mechUL.a ? [mechUL] : []),
+                  ]}
+                  pointLoads={mechPL.P > 0 ? [mechPL] : []}
+                />
               </div>
 
               {/* Results */}
