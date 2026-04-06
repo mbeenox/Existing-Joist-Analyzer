@@ -11,7 +11,7 @@ const JOIST_DB = {"10K1":[[10,550,550],[11,550,542],[12,550,455],[13,479,363],[1
 // ═══════════════════════════════════════════════════════════════════════
 const NUM_POINTS = 500;
 
-function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4) {
+function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4, triangularLoads = []) {
   const L = span; // ft
   const n = NUM_POINTS;
   const dx = L / n;
@@ -28,9 +28,6 @@ function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4) {
     const b = ul.b; // ft end
     if (w === 0 || a >= b) continue;
 
-    // Reactions for partial UDL: w from a to b on simply supported beam of length L
-    // Rb = w*(b-a)*(a+b)/(2*L)
-    // Ra = w*(b-a) - Rb
     const totalForce = w * (b - a);
     const Rb = totalForce * (a + b) / (2 * L);
     const Ra = totalForce - Rb;
@@ -40,11 +37,45 @@ function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4) {
       let v = Ra;
       let m = Ra * xi;
 
-      // Subtract load that has been passed
       if (xi > a) {
         const loadLen = Math.min(xi, b) - a;
         v -= w * loadLen;
         m -= w * loadLen * (xi - a - loadLen / 2);
+      }
+
+      V[i] += v;
+      M[i] += m;
+    }
+  }
+
+  // Process triangular loads: linearly varying from wStart to wEnd over [a, b]
+  for (const tl of triangularLoads) {
+    const { wStart, wEnd, a, b } = tl;
+    if (a >= b) continue;
+    const len = b - a;
+    // Total force = (wStart + wEnd) / 2 * len
+    const totalForce = (wStart + wEnd) / 2 * len;
+    // Centroid from a: (len/3) * (wStart + 2*wEnd) / (wStart + wEnd)
+    const centroid = a + (len / 3) * (wStart + 2 * wEnd) / (wStart + wEnd || 1);
+    const Rb = totalForce * centroid / L;
+    const Ra = totalForce - Rb;
+
+    for (let i = 0; i <= n; i++) {
+      const xi = x[i];
+      let v = Ra;
+      let m = Ra * xi;
+
+      if (xi > a) {
+        const xLocal = Math.min(xi, b) - a;
+        // w(x) = wStart + (wEnd - wStart) * x / len
+        // Integral of w from 0 to xLocal = wStart * xLocal + (wEnd - wStart) * xLocal^2 / (2 * len)
+        const loadArea = wStart * xLocal + (wEnd - wStart) * xLocal * xLocal / (2 * len);
+        // Centroid of loaded portion from a:
+        // integral of w*x dx / loadArea
+        const loadMoment = wStart * xLocal * xLocal / 2 + (wEnd - wStart) * xLocal * xLocal * xLocal / (3 * len);
+        const loadCentroid = loadArea > 0 ? loadMoment / loadArea : xLocal / 2;
+        v -= loadArea;
+        m -= loadArea * (xi - a - loadCentroid);
       }
 
       V[i] += v;
@@ -138,7 +169,7 @@ function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4) {
 // ═══════════════════════════════════════════════════════════════════════
 // DIAGRAM COMPONENT (D3-based)
 // ═══════════════════════════════════════════════════════════════════════
-function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
+function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, overlayY }) {
   const svgRef = useRef(null);
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ width: 400, height: 160 });
@@ -167,9 +198,15 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
 
     const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
+    // Compute y domain including overlay data if present
+    let yMin = Math.min(0, d3.min(y));
+    let yMax = Math.max(0, d3.max(y));
+    if (overlayY && overlayY.length > 0) {
+      yMin = Math.min(yMin, d3.min(overlayY));
+      yMax = Math.max(yMax, d3.max(overlayY));
+    }
+
     const xScale = d3.scaleLinear().domain([0, x[x.length - 1]]).range([0, w]);
-    const yMin = Math.min(0, d3.min(y));
-    const yMax = Math.max(0, d3.max(y));
     const pad = (yMax - yMin) * 0.1 || 1;
     const yScale = d3.scaleLinear().domain([yMin - pad, yMax + pad]).range([h, 0]);
 
@@ -194,7 +231,37 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
         .text("Capacity");
     }
 
-    // Area fill
+    // Overlay curve (existing joist capacity) — drawn first so primary is on top
+    if (overlayX && overlayY && overlayY.length > 0) {
+      const overlayLine = d3.line()
+        .x((_, i) => xScale(overlayX[i]))
+        .y(d => yScale(d))
+        .curve(d3.curveMonotoneX);
+
+      // Overlay fill
+      const overlayArea = d3.area()
+        .x((_, i) => xScale(overlayX[i]))
+        .y0(yScale(0))
+        .y1(d => yScale(d))
+        .curve(d3.curveMonotoneX);
+
+      g.append("path")
+        .datum(overlayY)
+        .attr("d", overlayArea)
+        .attr("fill", "rgba(239,68,68,0.06)")
+        .attr("stroke", "none");
+
+      g.append("path")
+        .datum(overlayY)
+        .attr("d", overlayLine)
+        .attr("fill", "none")
+        .attr("stroke", "#ef4444")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "6,3")
+        .attr("opacity", 0.8);
+    }
+
+    // Area fill (primary)
     const area = d3.area()
       .x((_, i) => xScale(x[i]))
       .y0(yScale(0))
@@ -207,7 +274,7 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
       .attr("fill", fillColor || "rgba(59,130,246,0.12)")
       .attr("stroke", "none");
 
-    // Line
+    // Line (primary)
     const line = d3.line()
       .x((_, i) => xScale(x[i]))
       .y(d => yScale(d))
@@ -232,14 +299,27 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
     g.selectAll(".domain").attr("stroke", "#334155");
     g.selectAll(".tick line").attr("stroke", "#334155");
 
-    // Title
+    // Title + legend
     svg.append("text")
       .attr("x", margin.left + w / 2).attr("y", 14)
       .attr("text-anchor", "middle")
       .attr("fill", "#e2e8f0").attr("font-size", "12px").attr("font-weight", 600)
       .text(`${title} (${unit})`);
 
-  }, [x, y, dims, title, unit, color, capacityLine, fillColor]);
+    if (overlayY && overlayY.length > 0) {
+      // Legend
+      const lx = margin.left + 8;
+      g.append("line").attr("x1", lx).attr("x2", lx + 18).attr("y1", -6).attr("y2", -6)
+        .attr("stroke", "#ef4444").attr("stroke-width", 1.5).attr("stroke-dasharray", "4,2");
+      g.append("text").attr("x", lx + 22).attr("y", -3)
+        .attr("fill", "#ef4444").attr("font-size", "9px").text("Capacity");
+      g.append("line").attr("x1", lx + 72).attr("x2", lx + 90).attr("y1", -6).attr("y2", -6)
+        .attr("stroke", color || "#3b82f6").attr("stroke-width", 2);
+      g.append("text").attr("x", lx + 94).attr("y", -3)
+        .attr("fill", color || "#3b82f6").attr("font-size", "9px").text("Demand");
+    }
+
+  }, [x, y, dims, title, unit, color, capacityLine, fillColor, overlayX, overlayY]);
 
   return (
     <div ref={containerRef} style={{ width: "100%" }}>
@@ -251,55 +331,168 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor }) {
 // ═══════════════════════════════════════════════════════════════════════
 // BEAM VISUALIZATION (SVG)
 // ═══════════════════════════════════════════════════════════════════════
-function BeamViz({ span, uniformLoads, pointLoads }) {
-  const w = 460, h = 80;
-  const margin = 40;
-  const bw = w - 2 * margin;
+function BeamViz({ span, uniformLoads, pointLoads, triangularLoads = [] }) {
+  const svgW = 500, margin = 44;
+  const bw = svgW - 2 * margin;
   const scale = bw / span;
-  const by = 45;
+  const maxLoadH = 55;
+  const minLoadH = 12;
+
+  // Find max magnitude for scaling
+  const allMags = [
+    ...uniformLoads.filter(u => u.w > 0).map(u => u.w),
+    ...triangularLoads.map(t => Math.max(t.wStart || 0, t.wEnd || 0)),
+  ];
+  const maxMag = Math.max(...allMags, 1);
+
+  const scaleH = (mag) => {
+    if (mag <= 0) return 0;
+    return minLoadH + (mag / maxMag) * (maxLoadH - minLoadH);
+  };
+
+  // Height map for stacking (discretized buckets)
+  const buckets = 200;
+  const heightMap = new Float64Array(buckets);
+
+  const getOffset = (aFt, bFt) => {
+    const i0 = Math.max(0, Math.floor((aFt / span) * buckets));
+    const i1 = Math.min(buckets - 1, Math.floor((bFt / span) * buckets));
+    let mx = 0;
+    for (let i = i0; i <= i1; i++) mx = Math.max(mx, heightMap[i]);
+    return mx;
+  };
+
+  const addToMap = (aFt, bFt, h) => {
+    const i0 = Math.max(0, Math.floor((aFt / span) * buckets));
+    const i1 = Math.min(buckets - 1, Math.floor((bFt / span) * buckets));
+    for (let i = i0; i <= i1; i++) heightMap[i] += h;
+  };
+
+  // Uniform loads with stacking
+  const ulRender = uniformLoads.filter(u => u.w > 0 && u.b > u.a).map((ul, i) => {
+    const h = scaleH(ul.w);
+    const offset = getOffset(ul.a, ul.b);
+    addToMap(ul.a, ul.b, h + 5);
+    return { ...ul, h, offset, idx: i };
+  });
+
+  // Triangular loads with stacking
+  const triRender = triangularLoads.filter(t => (t.wStart > 0 || t.wEnd > 0) && t.b > t.a).map((tl, i) => {
+    const peakMag = Math.max(tl.wStart, tl.wEnd);
+    const h = scaleH(peakMag);
+    const offset = getOffset(tl.a, tl.b);
+    addToMap(tl.a, tl.b, h + 5);
+    return { ...tl, h, offset, idx: i };
+  });
+
+  // Point loads with stacking
+  const plRender = pointLoads.filter(p => p.P > 0).map((pl, i) => {
+    const offset = getOffset(Math.max(0, pl.d - 0.2), Math.min(span, pl.d + 0.2));
+    const arrowH = Math.max(18, offset + 22);
+    addToMap(Math.max(0, pl.d - 0.3), Math.min(span, pl.d + 0.3), arrowH + 12);
+    return { ...pl, arrowH, idx: i };
+  });
+
+  // SVG height from max stack
+  let globalMaxH = 0;
+  for (let i = 0; i < buckets; i++) globalMaxH = Math.max(globalMaxH, heightMap[i]);
+  const topPad = 24;
+  const bottomPad = 22;
+  const svgH = topPad + Math.max(globalMaxH, 35) + 6 + bottomPad;
+  const by = topPad + Math.max(globalMaxH, 35) + 4;
+
+  const colors = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b"];
 
   return (
-    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ maxWidth: w }}>
+    <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ maxWidth: svgW }}>
       {/* Beam line */}
       <line x1={margin} y1={by} x2={margin + bw} y2={by} stroke="#94a3b8" strokeWidth={3} />
       {/* Supports */}
       <polygon points={`${margin},${by + 2} ${margin - 8},${by + 16} ${margin + 8},${by + 16}`} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
       <polygon points={`${margin + bw},${by + 2} ${margin + bw - 8},${by + 16} ${margin + bw + 8},${by + 16}`} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
-      {/* Uniform loads */}
-      {uniformLoads.map((ul, i) => {
-        if (ul.w === 0) return null;
+
+      {/* Uniform loads — stacked & scaled */}
+      {ulRender.map((ul) => {
         const x1 = margin + ul.a * scale;
         const x2 = margin + ul.b * scale;
-        const arrowCount = Math.max(2, Math.round((x2 - x1) / 18));
+        const baseY = by - 2 - ul.offset;
+        const topY = baseY - ul.h;
+        const col = colors[ul.idx % colors.length];
+        const arrowCount = Math.max(2, Math.round((x2 - x1) / 20));
         return (
-          <g key={`ul${i}`}>
-            <rect x={x1} y={by - 26} width={x2 - x1} height={4} fill="#3b82f6" opacity={0.6} rx={1} />
+          <g key={`ul${ul.idx}`}>
+            <rect x={x1} y={topY} width={x2 - x1} height={ul.h} fill={col} opacity={0.08} />
+            <line x1={x1} y1={topY} x2={x2} y2={topY} stroke={col} strokeWidth={2} opacity={0.7} />
+            <line x1={x1} y1={topY} x2={x1} y2={baseY} stroke={col} strokeWidth={0.7} opacity={0.35} />
+            <line x1={x2} y1={topY} x2={x2} y2={baseY} stroke={col} strokeWidth={0.7} opacity={0.35} />
             {Array.from({ length: arrowCount }, (_, j) => {
               const ax = x1 + (j / (arrowCount - 1)) * (x2 - x1);
-              return <line key={j} x1={ax} y1={by - 22} x2={ax} y2={by - 2} stroke="#3b82f6" strokeWidth={1} markerEnd="url(#arrow)" />;
+              return <line key={j} x1={ax} y1={topY + 2} x2={ax} y2={baseY} stroke={col} strokeWidth={1} markerEnd={`url(#arr${ul.idx % colors.length})`} />;
             })}
+            <text x={(x1 + x2) / 2} y={topY - 3} textAnchor="middle" fill={col} fontSize="8" fontWeight={600}>{ul.w} plf</text>
           </g>
         );
       })}
-      {/* Point loads */}
-      {pointLoads.map((pl, i) => {
-        if (pl.P === 0) return null;
-        const px = margin + pl.d * scale;
+
+      {/* Triangular loads — stacked & scaled */}
+      {triRender.map((tl) => {
+        const x1 = margin + tl.a * scale;
+        const x2 = margin + tl.b * scale;
+        const baseY = by - 2 - tl.offset;
+        const peak = Math.max(tl.wStart, tl.wEnd, 1);
+        const startH = tl.h * (tl.wStart / peak);
+        const endH = tl.h * (tl.wEnd / peak);
+        const cnt = Math.max(2, Math.round((x2 - x1) / 22));
         return (
-          <g key={`pl${i}`}>
-            <line x1={px} y1={by - 30} x2={px} y2={by - 2} stroke="#f43f5e" strokeWidth={2} markerEnd="url(#arrowRed)" />
-            <text x={px} y={by - 33} textAnchor="middle" fill="#f43f5e" fontSize="9" fontWeight={600}>{pl.P} lb</text>
+          <g key={`tri${tl.idx}`}>
+            <polygon
+              points={`${x1},${baseY} ${x1},${baseY - startH} ${x2},${baseY - endH} ${x2},${baseY}`}
+              fill="rgba(125,211,252,0.12)"
+              stroke="#7dd3fc"
+              strokeWidth={1.2}
+            />
+            {Array.from({ length: cnt }, (_, j) => {
+              const frac = j / (cnt - 1);
+              const ax = x1 + frac * (x2 - x1);
+              const ah = startH + (endH - startH) * frac;
+              if (ah < 4) return null;
+              return <line key={j} x1={ax} y1={baseY - ah + 2} x2={ax} y2={baseY} stroke="#7dd3fc" strokeWidth={0.8} markerEnd="url(#arrowCyan)" />;
+            })}
+            {tl.wStart >= tl.wEnd
+              ? <text x={x1 + 2} y={baseY - startH - 3} fill="#7dd3fc" fontSize="8" fontWeight={600}>drift {Math.round(tl.wStart)} plf</text>
+              : <text x={x2 - 2} y={baseY - endH - 3} textAnchor="end" fill="#7dd3fc" fontSize="8" fontWeight={600}>drift {Math.round(tl.wEnd)} plf</text>
+            }
           </g>
         );
       })}
+
+      {/* Point loads — stacked */}
+      {plRender.map((pl) => {
+        const px = margin + pl.d * scale;
+        const tipY = by - 2;
+        const topY = tipY - pl.arrowH;
+        return (
+          <g key={`pl${pl.idx}`}>
+            <line x1={px} y1={topY} x2={px} y2={tipY} stroke="#f43f5e" strokeWidth={2} markerEnd="url(#arrowRed)" />
+            <text x={px} y={topY - 4} textAnchor="middle" fill="#f43f5e" fontSize="9" fontWeight={600}>{pl.P} lb</text>
+          </g>
+        );
+      })}
+
       {/* Span label */}
-      <text x={margin + bw / 2} y={by + 28} textAnchor="middle" fill="#94a3b8" fontSize="10">{span} ft</text>
+      <text x={margin + bw / 2} y={by + 16} textAnchor="middle" fill="#94a3b8" fontSize="10">{span} ft</text>
+
       <defs>
-        <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="6" orient="auto">
-          <path d="M0,0 L3,6 L6,0" fill="none" stroke="#3b82f6" strokeWidth="1" />
-        </marker>
+        {colors.map((c, i) => (
+          <marker key={i} id={`arr${i}`} markerWidth="6" markerHeight="6" refX="3" refY="6" orient="auto">
+            <path d={`M0,0 L3,6 L6,0`} fill="none" stroke={c} strokeWidth="1" />
+          </marker>
+        ))}
         <marker id="arrowRed" markerWidth="6" markerHeight="6" refX="3" refY="6" orient="auto">
           <path d="M0,0 L3,6 L6,0" fill="none" stroke="#f43f5e" strokeWidth="1" />
+        </marker>
+        <marker id="arrowCyan" markerWidth="5" markerHeight="5" refX="2.5" refY="5" orient="auto">
+          <path d="M0,0 L2.5,5 L5,0" fill="none" stroke="#7dd3fc" strokeWidth="0.8" />
         </marker>
       </defs>
     </svg>
@@ -442,11 +635,22 @@ export default function BarJoistCalculator() {
   const [roofDL_psf, setRoofDL_psf] = useState(0);
   const [roofLL_psf, setRoofLL_psf] = useState(0);
   const [joistSpacing, setJoistSpacing] = useState(0);
+  const [roofLoadType, setRoofLoadType] = useState("Live Load"); // "Live Load" or "Snow Load"
+
+  // Snow drift (triangular): left and right sides
+  const [snowDriftL_psf, setSnowDriftL_psf] = useState(0);
+  const [snowDriftLStart, setSnowDriftLStart] = useState(0);
+  const [snowDriftLEnd, setSnowDriftLEnd] = useState(0);
+  const [snowDriftR_psf, setSnowDriftR_psf] = useState(0);
+  const [snowDriftRStart, setSnowDriftRStart] = useState(0);
+  const [snowDriftREnd, setSnowDriftREnd] = useState(0);
 
   // Derived plf values
   const roofDL_plf = roofDL_psf * joistSpacing;
   const roofLL_plf = roofLL_psf * joistSpacing;
   const roofTotal_plf = roofDL_plf + roofLL_plf;
+  const snowDriftL_plf = snowDriftL_psf * joistSpacing;
+  const snowDriftR_plf = snowDriftR_psf * joistSpacing;
 
   // Tab 2: Additional uniform loads with load type
   const [uniformLoads2, setUniformLoads2] = useState([]);
@@ -480,7 +684,9 @@ export default function BarJoistCalculator() {
       mechUL, mechPL,
     },
     tab2: {
-      roofDL_psf, roofLL_psf, joistSpacing,
+      roofDL_psf, roofLL_psf, joistSpacing, roofLoadType,
+      snowDriftL_psf, snowDriftLStart, snowDriftLEnd,
+      snowDriftR_psf, snowDriftRStart, snowDriftREnd,
       uniformLoads2,
       pointLoads2,
     },
@@ -533,6 +739,19 @@ export default function BarJoistCalculator() {
           if (t.roofDL_psf !== undefined) setRoofDL_psf(t.roofDL_psf);
           if (t.roofLL_psf !== undefined) setRoofLL_psf(t.roofLL_psf);
           if (t.joistSpacing !== undefined) setJoistSpacing(t.joistSpacing);
+          if (t.roofLoadType) setRoofLoadType(t.roofLoadType);
+          if (t.snowDriftL_psf !== undefined) setSnowDriftL_psf(t.snowDriftL_psf);
+          if (t.snowDriftLStart !== undefined) setSnowDriftLStart(t.snowDriftLStart);
+          if (t.snowDriftLEnd !== undefined) setSnowDriftLEnd(t.snowDriftLEnd);
+          if (t.snowDriftR_psf !== undefined) setSnowDriftR_psf(t.snowDriftR_psf);
+          if (t.snowDriftRStart !== undefined) setSnowDriftRStart(t.snowDriftRStart);
+          if (t.snowDriftREnd !== undefined) setSnowDriftREnd(t.snowDriftREnd);
+          // Legacy single drift support
+          if (t.snowDrift_psf !== undefined && t.snowDriftL_psf === undefined) {
+            setSnowDriftL_psf(t.snowDrift_psf);
+            if (t.snowDriftStart !== undefined) setSnowDriftLStart(t.snowDriftStart);
+            if (t.snowDriftEnd !== undefined) setSnowDriftLEnd(t.snowDriftEnd);
+          }
           if (t.uniformLoads2) setUniformLoads2(t.uniformLoads2);
           if (t.pointLoads2) setPointLoads2(t.pointLoads2);
         }
@@ -563,9 +782,21 @@ export default function BarJoistCalculator() {
     // Build all point loads for analysis
     const allPL = pointLoads2.filter(p => p.P !== 0);
 
-    if (allUL.length === 0 && allPL.length === 0) return null;
-    return analyzeBeam(spanNum, allUL, allPL, Eval, Ival);
-  }, [spanNum, Eval, Ival, roofTotal_plf, uniformLoads2, pointLoads2]);
+    // Build triangular loads (snow drift — left and right)
+    const allTri = [];
+    if (roofLoadType === "Snow Load") {
+      if (snowDriftL_plf > 0 && snowDriftLEnd > snowDriftLStart) {
+        allTri.push({ wStart: snowDriftL_plf, wEnd: 0, a: snowDriftLStart, b: snowDriftLEnd });
+      }
+      if (snowDriftR_plf > 0 && snowDriftREnd > snowDriftRStart) {
+        // Right drift: peak at end (right side), taper to 0 at start
+        allTri.push({ wStart: 0, wEnd: snowDriftR_plf, a: snowDriftRStart, b: snowDriftREnd });
+      }
+    }
+
+    if (allUL.length === 0 && allPL.length === 0 && allTri.length === 0) return null;
+    return analyzeBeam(spanNum, allUL, allPL, Eval, Ival, allTri);
+  }, [spanNum, Eval, Ival, roofTotal_plf, uniformLoads2, pointLoads2, roofLoadType, snowDriftL_plf, snowDriftLStart, snowDriftLEnd, snowDriftR_plf, snowDriftRStart, snowDriftREnd]);
 
   // Comparison
   const comparison = useMemo(() => {
@@ -905,12 +1136,23 @@ export default function BarJoistCalculator() {
               {/* Uniform Roof Load — full span, psf with spacing */}
               <div style={s.card}>
                 <div style={s.cardTitle}>Uniform Roof Load <span style={{ fontWeight: 400, fontSize: 10, color: "#64748b" }}>(applied full span)</span></div>
-                <div style={s.grid(4)}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 8, alignItems: "end" }}>
                   <CautionInput label="Dead Load" value={roofDL_psf} onChange={v => setRoofDL_psf(v)} unit="psf" />
-                  <CautionInput label="Live Load" value={roofLL_psf} onChange={v => setRoofLL_psf(v)} unit="psf" />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <label style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Load Type</label>
+                    <select
+                      value={roofLoadType}
+                      onChange={e => setRoofLoadType(e.target.value)}
+                      style={s.select}
+                    >
+                      <option value="Live Load">Live Load</option>
+                      <option value="Snow Load">Snow Load</option>
+                    </select>
+                  </div>
+                  <CautionInput label={roofLoadType === "Snow Load" ? "Balanced Snow (pf)" : "Live Load"} value={roofLL_psf} onChange={v => setRoofLL_psf(v)} unit="psf" />
                   <CautionInput label="Joist Spacing" value={joistSpacing} onChange={v => setJoistSpacing(v)} unit="ft" />
                   <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-                    <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500, marginBottom: 2 }}>Total (D+L)</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500, marginBottom: 2 }}>Total (D+{roofLoadType === "Snow Load" ? "S" : "L"})</div>
                     <div style={{
                       padding: "6px 8px",
                       background: "#0f172a",
@@ -924,8 +1166,49 @@ export default function BarJoistCalculator() {
                   </div>
                 </div>
                 <div style={{ marginTop: 8, fontSize: 11, color: "#475569" }}>
-                  DL = {roofDL_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf &nbsp;|&nbsp; LL = {roofLL_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf &nbsp;|&nbsp; ({roofDL_psf} + {roofLL_psf}) psf × {joistSpacing} ft spacing
+                  DL = {roofDL_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf &nbsp;|&nbsp; {roofLoadType === "Snow Load" ? "Balanced Snow" : "LL"} = {roofLL_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf &nbsp;|&nbsp; ({roofDL_psf} + {roofLL_psf}) psf × {joistSpacing} ft spacing
                 </div>
+
+                {/* Snow Drift — only shown when Snow Load selected */}
+                {roofLoadType === "Snow Load" && (
+                  <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {/* Left Drift */}
+                    <div style={{ padding: 12, background: "#0f172a", borderRadius: 8, border: "1px solid #1e3a5f" }}>
+                      <div style={{ fontSize: 11, color: "#7dd3fc", fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dd3fc" strokeWidth="2"><polygon points="2,22 2,4 18,22" /></svg>
+                        Left Snow Drift
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <CautionInput label="Peak Drift Load" value={snowDriftL_psf} onChange={v => setSnowDriftL_psf(v)} unit="psf" />
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          <CautionInput label="Start (peak)" value={snowDriftLStart} onChange={v => setSnowDriftLStart(v)} unit="ft" />
+                          <CautionInput label="End (tapers to 0)" value={snowDriftLEnd} onChange={v => setSnowDriftLEnd(v)} unit="ft" />
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10, color: "#475569" }}>
+                        {snowDriftL_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf peak at {snowDriftLStart} ft → 0 at {snowDriftLEnd} ft
+                      </div>
+                    </div>
+
+                    {/* Right Drift */}
+                    <div style={{ padding: 12, background: "#0f172a", borderRadius: 8, border: "1px solid #1e3a5f" }}>
+                      <div style={{ fontSize: 11, color: "#7dd3fc", fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dd3fc" strokeWidth="2"><polygon points="6,22 22,4 22,22" /></svg>
+                        Right Snow Drift
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <CautionInput label="Peak Drift Load" value={snowDriftR_psf} onChange={v => setSnowDriftR_psf(v)} unit="psf" />
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          <CautionInput label="Start (tapers from 0)" value={snowDriftRStart} onChange={v => setSnowDriftRStart(v)} unit="ft" />
+                          <CautionInput label="End (peak)" value={snowDriftREnd} onChange={v => setSnowDriftREnd(v)} unit="ft" />
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10, color: "#475569" }}>
+                        0 at {snowDriftRStart} ft → {snowDriftR_plf.toLocaleString(undefined, { maximumFractionDigits: 1 })} plf peak at {snowDriftREnd} ft
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Additional Uniform Loads */}
@@ -1030,6 +1313,10 @@ export default function BarJoistCalculator() {
                     ...uniformLoads2.filter(u => u.w !== 0 && u.b > u.a),
                   ]}
                   pointLoads={pointLoads2.filter(p => p.P !== 0)}
+                  triangularLoads={roofLoadType === "Snow Load" ? [
+                    ...(snowDriftL_plf > 0 && snowDriftLEnd > snowDriftLStart ? [{ wStart: snowDriftL_plf, wEnd: 0, a: snowDriftLStart, b: snowDriftLEnd }] : []),
+                    ...(snowDriftR_plf > 0 && snowDriftREnd > snowDriftRStart ? [{ wStart: 0, wEnd: snowDriftR_plf, a: snowDriftRStart, b: snowDriftREnd }] : []),
+                  ] : []}
                 />
               </div>
 
@@ -1059,9 +1346,9 @@ export default function BarJoistCalculator() {
 
                   <div style={s.card}>
                     <div style={s.cardTitle}>Diagrams</div>
-                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" capacityLine={tab1Results ? tab1Results.maxM : undefined} />
-                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" capacityLine={tab1Results ? tab1Results.maxV : undefined} />
-                    <Diagram x={tab2Results.x} y={tab2Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" capacityLine={tab1Results ? tab1Results.maxDefl : undefined} />
+                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.M : undefined} />
+                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.V : undefined} />
+                    <Diagram x={tab2Results.x} y={tab2Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.defl : undefined} />
                   </div>
                 </>
               )}
