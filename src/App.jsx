@@ -169,16 +169,18 @@ function analyzeBeam(span, uniformLoads, pointLoads, E_ksi, I_in4, triangularLoa
 // ═══════════════════════════════════════════════════════════════════════
 // DIAGRAM COMPONENT (D3-based)
 // ═══════════════════════════════════════════════════════════════════════
-function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, overlayY }) {
+function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, overlayY, yTickInterval }) {
   const svgRef = useRef(null);
+  const tooltipRef = useRef(null);
   const containerRef = useRef(null);
-  const [dims, setDims] = useState({ width: 400, height: 160 });
+  const [dims, setDims] = useState({ width: 400, height: 200 });
+  const hasOverlay = overlayX && overlayY && overlayY.length > 0;
 
   useEffect(() => {
     const ro = new ResizeObserver(entries => {
       for (const e of entries) {
         const w = e.contentRect.width;
-        if (w > 50) setDims({ width: w, height: 160 });
+        if (w > 50) setDims({ width: w, height: 200 });
       }
     });
     if (containerRef.current) ro.observe(containerRef.current);
@@ -188,7 +190,7 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
   useEffect(() => {
     if (!svgRef.current || !x || x.length === 0) return;
 
-    const margin = { top: 20, right: 16, bottom: 28, left: 58 };
+    const margin = { top: 28, right: 16, bottom: 32, left: 64 };
     const w = dims.width - margin.left - margin.right;
     const h = dims.height - margin.top - margin.bottom;
 
@@ -198,17 +200,26 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
 
     const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-    // Compute y domain including overlay data if present
+    // Compute y domain including overlay data
     let yMin = Math.min(0, d3.min(y));
     let yMax = Math.max(0, d3.max(y));
-    if (overlayY && overlayY.length > 0) {
+    if (hasOverlay) {
       yMin = Math.min(yMin, d3.min(overlayY));
       yMax = Math.max(yMax, d3.max(overlayY));
     }
 
-    const xScale = d3.scaleLinear().domain([0, x[x.length - 1]]).range([0, w]);
-    const pad = (yMax - yMin) * 0.1 || 1;
-    const yScale = d3.scaleLinear().domain([yMin - pad, yMax + pad]).range([h, 0]);
+    const spanLen = x[x.length - 1];
+    const xScale = d3.scaleLinear().domain([0, spanLen]).range([0, w]);
+
+    // Snap y domain to tick interval if provided
+    const pad = (yMax - yMin) * 0.12 || 1;
+    let yDomMin = yMin - pad;
+    let yDomMax = yMax + pad;
+    if (yTickInterval) {
+      yDomMin = Math.floor(yDomMin / yTickInterval) * yTickInterval;
+      yDomMax = Math.ceil(yDomMax / yTickInterval) * yTickInterval;
+    }
+    const yScale = d3.scaleLinear().domain([yDomMin, yDomMax]).range([h, 0]);
 
     // Zero line
     g.append("line")
@@ -217,109 +228,246 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
       .attr("stroke", "#64748b").attr("stroke-width", 1)
       .attr("stroke-dasharray", "4,3");
 
-    // Capacity line
-    if (capacityLine !== undefined) {
-      g.append("line")
-        .attr("x1", 0).attr("x2", w)
-        .attr("y1", yScale(capacityLine)).attr("y2", yScale(capacityLine))
-        .attr("stroke", "#ef4444").attr("stroke-width", 1.5)
-        .attr("stroke-dasharray", "6,4");
-      g.append("text")
-        .attr("x", w - 4).attr("y", yScale(capacityLine) - 5)
-        .attr("text-anchor", "end").attr("fill", "#ef4444")
-        .attr("font-size", "10px").attr("font-weight", 600)
-        .text("Capacity");
+    // ── Exceedance highlight zones with % labels ──
+    if (hasOverlay) {
+      const bandH = h / 8;
+      const bandY = h - bandH;
+
+      // Helper: interpolate capacity at a given x position
+      const getCapAt = (xi) => {
+        if (!overlayX || !overlayY) return 0;
+        const idx = overlayX.findIndex(ox => ox >= xi);
+        if (idx <= 0) return Math.abs(overlayY[0] || 0);
+        const t = (xi - overlayX[idx-1]) / (overlayX[idx] - overlayX[idx-1] || 1);
+        return Math.abs(overlayY[idx-1] + t * (overlayY[idx] - overlayY[idx-1]));
+      };
+
+      // Collect exceedance zones: [{start, end, maxPct}]
+      const zones = [];
+      let inExceed = false;
+      let exceedStart = 0;
+      let zoneMaxPct = 0;
+      const step = Math.max(1, Math.floor(y.length / 500));
+
+      for (let i = 0; i <= y.length; i += (i < y.length ? step : 0)) {
+        if (i >= y.length) i = y.length - 1;
+        const xi = x[i];
+        const demandVal = Math.abs(y[i]);
+        const capVal = getCapAt(xi);
+        const exceeds = demandVal > capVal * 1.001;
+        const pct = capVal > 0 ? ((demandVal - capVal) / capVal) * 100 : (demandVal > 0 ? 100 : 0);
+
+        if (exceeds && !inExceed) {
+          exceedStart = xi;
+          zoneMaxPct = pct;
+          inExceed = true;
+        } else if (exceeds && inExceed) {
+          zoneMaxPct = Math.max(zoneMaxPct, pct);
+        } else if (!exceeds && inExceed) {
+          zones.push({ start: exceedStart, end: xi, maxPct: zoneMaxPct });
+          inExceed = false;
+        }
+        if (i === y.length - 1) {
+          if (inExceed) zones.push({ start: exceedStart, end: xi, maxPct: zoneMaxPct });
+          break;
+        }
+      }
+
+      // Draw zones with % labels
+      for (const zone of zones) {
+        const zx1 = xScale(zone.start);
+        const zx2 = xScale(zone.end);
+        const zw = Math.max(2, zx2 - zx1);
+        g.append("rect")
+          .attr("x", zx1).attr("y", bandY)
+          .attr("width", zw).attr("height", bandH)
+          .attr("fill", "#ef4444").attr("opacity", 0.15).attr("rx", 2);
+        // % label centered on zone
+        const pctLabel = zone.maxPct < 1 ? "<1%" : Math.round(zone.maxPct) + "%";
+        g.append("text")
+          .attr("x", zx1 + zw / 2).attr("y", bandY + bandH / 2 + 3.5)
+          .attr("text-anchor", "middle")
+          .attr("fill", "#ef4444").attr("font-size", "9px").attr("font-weight", 700)
+          .text("+" + pctLabel);
+      }
     }
 
-    // Overlay curve (existing joist capacity) — drawn first so primary is on top
-    if (overlayX && overlayY && overlayY.length > 0) {
+    // ── Overlay curve (capacity) ──
+    if (hasOverlay) {
       const overlayLine = d3.line()
         .x((_, i) => xScale(overlayX[i]))
         .y(d => yScale(d))
         .curve(d3.curveMonotoneX);
 
-      // Overlay fill
       const overlayArea = d3.area()
         .x((_, i) => xScale(overlayX[i]))
         .y0(yScale(0))
         .y1(d => yScale(d))
         .curve(d3.curveMonotoneX);
 
-      g.append("path")
-        .datum(overlayY)
-        .attr("d", overlayArea)
-        .attr("fill", "rgba(239,68,68,0.06)")
-        .attr("stroke", "none");
+      g.append("path").datum(overlayY).attr("d", overlayArea)
+        .attr("fill", "rgba(239,68,68,0.05)").attr("stroke", "none");
 
-      g.append("path")
-        .datum(overlayY)
-        .attr("d", overlayLine)
-        .attr("fill", "none")
-        .attr("stroke", "#ef4444")
-        .attr("stroke-width", 1.5)
-        .attr("stroke-dasharray", "6,3")
-        .attr("opacity", 0.8);
+      g.append("path").datum(overlayY).attr("d", overlayLine)
+        .attr("fill", "none").attr("stroke", "#ef4444")
+        .attr("stroke-width", 1.5).attr("stroke-dasharray", "6,3").attr("opacity", 0.8);
     }
 
-    // Area fill (primary)
+    // ── Primary area + line ──
     const area = d3.area()
       .x((_, i) => xScale(x[i]))
       .y0(yScale(0))
-      .y1((d) => yScale(d))
+      .y1(d => yScale(d))
       .curve(d3.curveMonotoneX);
 
-    g.append("path")
-      .datum(y)
-      .attr("d", area)
-      .attr("fill", fillColor || "rgba(59,130,246,0.12)")
-      .attr("stroke", "none");
+    g.append("path").datum(y).attr("d", area)
+      .attr("fill", fillColor || "rgba(59,130,246,0.12)").attr("stroke", "none");
 
-    // Line (primary)
     const line = d3.line()
       .x((_, i) => xScale(x[i]))
       .y(d => yScale(d))
       .curve(d3.curveMonotoneX);
 
-    g.append("path")
-      .datum(y)
-      .attr("d", line)
-      .attr("fill", "none")
-      .attr("stroke", color || "#3b82f6")
-      .attr("stroke-width", 2);
+    g.append("path").datum(y).attr("d", line)
+      .attr("fill", "none").attr("stroke", color || "#3b82f6").attr("stroke-width", 2);
 
-    // Axes
-    const xAxis = d3.axisBottom(xScale).ticks(6).tickFormat(d => d + " ft");
-    const yAxis = d3.axisLeft(yScale).ticks(5).tickFormat(d3.format(",.0f"));
+    // ── Axes ──
+    // X axis: 1 ft increments
+    const xAxis = d3.axisBottom(xScale)
+      .tickValues(d3.range(0, spanLen + 0.5, 1))
+      .tickFormat(d => d % 5 === 0 || d === 0 || d === Math.round(spanLen) ? d + "'" : "");
 
-    g.append("g").attr("transform", `translate(0,${h})`).call(xAxis)
-      .selectAll("text").attr("fill", "#94a3b8").attr("font-size", "10px");
-    g.append("g").call(yAxis)
-      .selectAll("text").attr("fill", "#94a3b8").attr("font-size", "10px");
+    // Y axis: use provided interval or auto
+    let yAxis;
+    if (yTickInterval) {
+      const ticks = [];
+      for (let v = yDomMin; v <= yDomMax + yTickInterval * 0.01; v += yTickInterval) {
+        ticks.push(Math.round(v * 1000) / 1000);
+      }
+      yAxis = d3.axisLeft(yScale).tickValues(ticks);
+    } else {
+      yAxis = d3.axisLeft(yScale).ticks(6);
+    }
+
+    // Format y-axis numbers
+    const isDeflection = unit === "in";
+    if (isDeflection) {
+      yAxis.tickFormat(d => d === 0 ? "0" : d.toFixed(3));
+    } else {
+      yAxis.tickFormat(d3.format(",.0f"));
+    }
+
+    const xAxisG = g.append("g").attr("transform", `translate(0,${h})`).call(xAxis);
+    xAxisG.selectAll("text").attr("fill", "#94a3b8").attr("font-size", "9px");
+    // Minor ticks (no label) get shorter
+    xAxisG.selectAll(".tick").each(function(d) {
+      const text = d3.select(this).select("text").text();
+      if (!text) d3.select(this).select("line").attr("y2", 3);
+    });
+
+    const yAxisG = g.append("g").call(yAxis);
+    yAxisG.selectAll("text").attr("fill", "#94a3b8").attr("font-size", "10px");
 
     g.selectAll(".domain").attr("stroke", "#334155");
     g.selectAll(".tick line").attr("stroke", "#334155");
 
-    // Title + legend
+    // ── Title + Legend ──
     svg.append("text")
       .attr("x", margin.left + w / 2).attr("y", 14)
       .attr("text-anchor", "middle")
       .attr("fill", "#e2e8f0").attr("font-size", "12px").attr("font-weight", 600)
       .text(`${title} (${unit})`);
 
-    if (overlayY && overlayY.length > 0) {
-      // Legend
-      const lx = margin.left + 8;
-      g.append("line").attr("x1", lx).attr("x2", lx + 18).attr("y1", -6).attr("y2", -6)
+    if (hasOverlay) {
+      const lx = 8;
+      g.append("line").attr("x1", lx).attr("x2", lx + 18).attr("y1", -10).attr("y2", -10)
         .attr("stroke", "#ef4444").attr("stroke-width", 1.5).attr("stroke-dasharray", "4,2");
-      g.append("text").attr("x", lx + 22).attr("y", -3)
+      g.append("text").attr("x", lx + 22).attr("y", -7)
         .attr("fill", "#ef4444").attr("font-size", "9px").text("Capacity");
-      g.append("line").attr("x1", lx + 72).attr("x2", lx + 90).attr("y1", -6).attr("y2", -6)
+      g.append("line").attr("x1", lx + 72).attr("x2", lx + 90).attr("y1", -10).attr("y2", -10)
         .attr("stroke", color || "#3b82f6").attr("stroke-width", 2);
-      g.append("text").attr("x", lx + 94).attr("y", -3)
+      g.append("text").attr("x", lx + 94).attr("y", -7)
         .attr("fill", color || "#3b82f6").attr("font-size", "9px").text("Demand");
     }
 
-  }, [x, y, dims, title, unit, color, capacityLine, fillColor, overlayX, overlayY]);
+    // ── Interactive crosshair (only if overlay) ──
+    if (hasOverlay) {
+      const crossV = g.append("line").attr("y1", 0).attr("y2", h)
+        .attr("stroke", "#94a3b8").attr("stroke-width", 0.8).attr("stroke-dasharray", "3,3").style("display", "none");
+      const crossH = g.append("line").attr("x1", 0).attr("x2", w)
+        .attr("stroke", "#94a3b8").attr("stroke-width", 0.8).attr("stroke-dasharray", "3,3").style("display", "none");
+
+      const dotDemand = g.append("circle").attr("r", 4).attr("fill", color || "#3b82f6").attr("stroke", "#fff").attr("stroke-width", 1).style("display", "none");
+      const dotCap = g.append("circle").attr("r", 4).attr("fill", "#ef4444").attr("stroke", "#fff").attr("stroke-width", 1).style("display", "none");
+
+      const tooltip = g.append("g").style("display", "none");
+      const tooltipBg = tooltip.append("rect").attr("rx", 5).attr("ry", 5).attr("fill", "#1e293b").attr("stroke", "#475569").attr("stroke-width", 0.5).attr("opacity", 0.95);
+      const tooltipText1 = tooltip.append("text").attr("fill", "#94a3b8").attr("font-size", "10px").attr("font-weight", 500);
+      const tooltipText2 = tooltip.append("text").attr("fill", color || "#3b82f6").attr("font-size", "10px").attr("font-weight", 600);
+      const tooltipText3 = tooltip.append("text").attr("fill", "#ef4444").attr("font-size", "10px").attr("font-weight", 600);
+
+      const fmtVal = isDeflection ? (v => v.toFixed(4) + " in") : (v => Math.round(v).toLocaleString() + " " + unit);
+
+      // Bisector for finding closest data point
+      const bisect = d3.bisector(d => d).left;
+
+      const overlay = g.append("rect").attr("width", w).attr("height", h).attr("fill", "none").attr("pointer-events", "all").style("cursor", "crosshair");
+
+      overlay.on("mousemove", function(event) {
+        const [mx] = d3.pointer(event, this);
+        const xVal = xScale.invert(mx);
+        if (xVal < 0 || xVal > spanLen) return;
+
+        // Find demand value
+        const idx = bisect(x, xVal);
+        const i0 = Math.max(0, idx - 1);
+        const i1 = Math.min(x.length - 1, idx);
+        const t = (x[i1] - x[i0]) > 0 ? (xVal - x[i0]) / (x[i1] - x[i0]) : 0;
+        const demandVal = y[i0] + t * (y[i1] - y[i0]);
+
+        // Find capacity value
+        const ci = bisect(overlayX, xVal);
+        const ci0 = Math.max(0, ci - 1);
+        const ci1 = Math.min(overlayX.length - 1, ci);
+        const ct = (overlayX[ci1] - overlayX[ci0]) > 0 ? (xVal - overlayX[ci0]) / (overlayX[ci1] - overlayX[ci0]) : 0;
+        const capVal = overlayY[ci0] + ct * (overlayY[ci1] - overlayY[ci0]);
+
+        const px = xScale(xVal);
+        crossV.attr("x1", px).attr("x2", px).style("display", null);
+        crossH.attr("y1", yScale(demandVal)).attr("y2", yScale(demandVal)).style("display", null);
+        dotDemand.attr("cx", px).attr("cy", yScale(demandVal)).style("display", null);
+        dotCap.attr("cx", px).attr("cy", yScale(capVal)).style("display", null);
+
+        // Tooltip
+        tooltip.style("display", null);
+        const xLabel = "x = " + xVal.toFixed(1) + " ft";
+        const dLabel = "Demand: " + fmtVal(demandVal);
+        const cLabel = "Capacity: " + fmtVal(capVal);
+        tooltipText1.text(xLabel).attr("x", 8).attr("y", 15);
+        tooltipText2.text(dLabel).attr("x", 8).attr("y", 29);
+        tooltipText3.text(cLabel).attr("x", 8).attr("y", 43);
+
+        const tw = Math.max(xLabel.length, dLabel.length, cLabel.length) * 6.5 + 16;
+        const th = 52;
+        tooltipBg.attr("width", tw).attr("height", th);
+
+        let tx = px + 12;
+        if (tx + tw > w) tx = px - tw - 12;
+        let ty = yScale(demandVal) - th - 8;
+        if (ty < 0) ty = yScale(demandVal) + 12;
+        tooltip.attr("transform", `translate(${tx},${ty})`);
+      });
+
+      overlay.on("mouseleave", function() {
+        crossV.style("display", "none");
+        crossH.style("display", "none");
+        dotDemand.style("display", "none");
+        dotCap.style("display", "none");
+        tooltip.style("display", "none");
+      });
+    }
+
+  }, [x, y, dims, title, unit, color, capacityLine, fillColor, overlayX, overlayY, yTickInterval]);
 
   return (
     <div ref={containerRef} style={{ width: "100%" }}>
@@ -327,6 +475,7 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
     </div>
   );
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // BEAM VISUALIZATION (SVG)
@@ -801,13 +950,48 @@ export default function BarJoistCalculator() {
   // Comparison
   const comparison = useMemo(() => {
     if (!tab1Results || !tab2Results) return null;
-    const mPass = tab2Results.maxM <= tab1Results.maxM;
-    const vPass = tab2Results.maxV <= tab1Results.maxV;
-    const dPass = tab2Results.maxDefl <= tab1Results.maxDefl;
+
+    // Compute max deviation % along the span, returning worst-point values
+    const computeMaxDeviation = (demandArr, capArr, demandX, capX) => {
+      let maxPct = 0;
+      let worstDemand = 0;
+      let worstCap = 0;
+      const step = Math.max(1, Math.floor(demandArr.length / 500));
+      for (let i = 0; i < demandArr.length; i += step) {
+        const xi = demandX[i];
+        const dVal = Math.abs(demandArr[i]);
+        // Interpolate capacity at xi
+        let cVal = 0;
+        const idx = capX.findIndex(cx => cx >= xi);
+        if (idx <= 0) cVal = Math.abs(capArr[0] || 0);
+        else {
+          const t = (xi - capX[idx-1]) / (capX[idx] - capX[idx-1] || 1);
+          cVal = Math.abs(capArr[idx-1] + t * (capArr[idx] - capArr[idx-1]));
+        }
+        if (cVal > 0 && dVal > cVal) {
+          const pct = ((dVal - cVal) / cVal) * 100;
+          if (pct > maxPct) {
+            maxPct = pct;
+            worstDemand = dVal;
+            worstCap = cVal;
+          }
+        }
+      }
+      return { maxPct, worstDemand, worstCap };
+    };
+
+    const mDev = computeMaxDeviation(tab2Results.M, tab1Results.M, tab2Results.x, tab1Results.x);
+    const vDev = computeMaxDeviation(tab2Results.V, tab1Results.V, tab2Results.x, tab1Results.x);
+    const dDev = computeMaxDeviation(tab2Results.defl, tab1Results.defl, tab2Results.x, tab1Results.x);
+
+    const mPass = mDev.maxPct < 0.1;
+    const vPass = vDev.maxPct < 0.1;
+    const dPass = dDev.maxPct < 0.1;
+
     return {
-      moment: { cap: tab1Results.maxM, demand: tab2Results.maxM, pass: mPass },
-      shear: { cap: tab1Results.maxV, demand: tab2Results.maxV, pass: vPass },
-      deflection: { cap: tab1Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass },
+      moment: { cap: tab1Results.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
+      shear: { cap: tab1Results.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
+      deflection: { cap: tab1Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass, devPct: dDev.maxPct, worstDemand: dDev.worstDemand, worstCap: dDev.worstCap },
       overall: mPass && vPass && dPass,
     };
   }, [tab1Results, tab2Results]);
@@ -1095,8 +1279,8 @@ export default function BarJoistCalculator() {
 
                   <div style={s.card}>
                     <div style={s.cardTitle}>Diagrams</div>
-                    <Diagram x={tab1Results.x} y={tab1Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" />
-                    <Diagram x={tab1Results.x} y={tab1Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" />
+                    <Diagram x={tab1Results.x} y={tab1Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" yTickInterval={5000} />
+                    <Diagram x={tab1Results.x} y={tab1Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" yTickInterval={1000} />
                     <Diagram x={tab1Results.x} y={tab1Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" />
                   </div>
                 </>
@@ -1346,8 +1530,8 @@ export default function BarJoistCalculator() {
 
                   <div style={s.card}>
                     <div style={s.cardTitle}>Diagrams</div>
-                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.M : undefined} />
-                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.V : undefined} />
+                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.M : undefined} yTickInterval={5000} />
+                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.V : undefined} yTickInterval={1000} />
                     <Diagram x={tab2Results.x} y={tab2Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.defl : undefined} />
                   </div>
                 </>
@@ -1359,9 +1543,11 @@ export default function BarJoistCalculator() {
                   <div style={s.cardTitle}>Capacity vs. Demand Comparison</div>
 
                   <div style={{ textAlign: "center", marginBottom: 16 }}>
-                    <span style={s.badge(comparison.overall)}>
-                      {comparison.overall ? "✓ PASS — Joist Within Capacity" : "✕ FAIL — Joist Capacity Exceeded"}
-                    </span>
+                    {comparison.overall ? (
+                      <span style={s.badge(true)}>✓ PASS — Joist Within Capacity</span>
+                    ) : (
+                      <span style={s.badge(false)}>✕ Joist Needs Reinforcement — Check Graphs Above</span>
+                    )}
                   </div>
 
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -1371,23 +1557,36 @@ export default function BarJoistCalculator() {
                         <th style={{ textAlign: "right", padding: "8px 12px", color: "#94a3b8", fontWeight: 600 }}>Existing Capacity</th>
                         <th style={{ textAlign: "right", padding: "8px 12px", color: "#94a3b8", fontWeight: 600 }}>With Added Load</th>
                         <th style={{ textAlign: "right", padding: "8px 12px", color: "#94a3b8", fontWeight: 600 }}>Ratio</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px", color: "#94a3b8", fontWeight: 600 }}>Max Deviation</th>
                         <th style={{ textAlign: "center", padding: "8px 12px", color: "#94a3b8", fontWeight: 600 }}>Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {[
-                        { name: "Moment (lb·ft)", cap: comparison.moment.cap, dem: comparison.moment.demand, pass: comparison.moment.pass },
-                        { name: "Shear (lb)", cap: comparison.shear.cap, dem: comparison.shear.demand, pass: comparison.shear.pass },
-                        { name: "Deflection (in)", cap: comparison.deflection.cap, dem: comparison.deflection.demand, pass: comparison.deflection.pass },
-                      ].map((row, i) => (
+                        { name: "Moment (lb·ft)", ...comparison.moment, isDefl: false },
+                        { name: "Shear (lb)", ...comparison.shear, isDefl: false },
+                        { name: "Deflection (in)", ...comparison.deflection, isDefl: true },
+                      ].map((row, i) => {
+                        // When failing, show worst-point values; when passing, show max values
+                        const displayDem = !row.pass ? row.worstDemand : row.demand;
+                        const displayCap = !row.pass ? row.worstCap : row.cap;
+                        return (
                         <tr key={i} style={{ borderBottom: "1px solid #1e293b", background: !row.pass ? "#7f1d1d15" : "transparent" }}>
-                          <td style={{ padding: "8px 12px", fontWeight: 500 }}>{row.name}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>{row.name.includes("Defl") ? fmt(row.cap, 3) : fmt(row.cap, 0)}</td>
+                          <td style={{ padding: "8px 12px", fontWeight: 500 }}>
+                            {row.name}
+                            {!row.pass && <div style={{ fontSize: 9, color: "#f87171", fontWeight: 400, marginTop: 2 }}>at worst deviation</div>}
+                          </td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>
+                            {row.isDefl ? fmt(displayCap, 3) : fmt(displayCap, 0)}
+                          </td>
                           <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace", color: !row.pass ? "#ef4444" : "#e2e8f0", fontWeight: !row.pass ? 700 : 400 }}>
-                            {row.name.includes("Defl") ? fmt(row.dem, 3) : fmt(row.dem, 0)}
+                            {row.isDefl ? fmt(displayDem, 3) : fmt(displayDem, 0)}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace", color: !row.pass ? "#ef4444" : "#94a3b8" }}>
-                            {row.cap > 0 ? fmt(row.dem / row.cap * 100, 1) + "%" : "—"}
+                            {displayCap > 0 ? fmt(displayDem / displayCap * 100, 1) + "%" : "—"}
+                          </td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace", color: !row.pass ? "#ef4444" : "#10b981", fontWeight: !row.pass ? 700 : 400 }}>
+                            {row.pass ? "—" : "+" + fmt(row.devPct, 1) + "%"}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "center" }}>
                             <span style={{ ...s.badge(row.pass), fontSize: 11, padding: "2px 10px" }}>
@@ -1395,7 +1594,8 @@ export default function BarJoistCalculator() {
                             </span>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
