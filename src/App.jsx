@@ -780,6 +780,45 @@ export default function BarJoistCalculator() {
     return analyzeBeam(spanNum, allUL, allPL, Eval, Ival);
   }, [spanNum, liveLoad, deadLoad, Eval, Ival, mechUL, mechPL]);
 
+  // Capacity Envelope: allowable moment and shear envelopes per SJI
+  const capacityEnvelope = useMemo(() => {
+    if (!tab1Results || !spanNum) return null;
+    const L = spanNum;
+    const n = NUM_POINTS;
+    const dx = L / n;
+    const xArr = Array.from({ length: n + 1 }, (_, i) => i * dx);
+
+    const Mallow = tab1Results.maxM; // wL^2/8 from the analysis
+    const Vmax = tab1Results.maxV;   // wL/2 from the analysis
+    const Vcap = 0.25 * Vmax;        // mid-span shear capacity
+
+    // Moment envelope
+    const Menv = xArr.map(x => {
+      if (x <= 4) return (Mallow / 4) * x;
+      if (x >= L - 4) return (Mallow / 4) * (L - x);
+      return Mallow;
+    });
+
+    // Shear envelope
+    const slopeRate = (Vmax - Vcap) / (0.375 * L);
+    const Venv = xArr.map(x => {
+      if (x <= 0.375 * L) {
+        return Vmax - slopeRate * x;
+      } else if (x < 0.5 * L) {
+        return Vcap;
+      } else if (x <= 0.5 * L + dx * 0.5) {
+        // Step at midspan — use negative side
+        return -Vcap;
+      } else if (x <= 0.625 * L) {
+        return -Vcap;
+      } else {
+        return -Vcap - slopeRate * (x - 0.625 * L);
+      }
+    });
+
+    return { x: xArr, M: Menv, V: Venv, maxM: Mallow, maxV: Vmax, Vcap };
+  }, [tab1Results, spanNum]);
+
   // Tab 2: Roof load (full span, psf with spacing)
   const [roofDL_psf, setRoofDL_psf] = useState(0);
   const [roofLL_psf, setRoofLL_psf] = useState(0);
@@ -950,6 +989,7 @@ export default function BarJoistCalculator() {
   // Comparison
   const comparison = useMemo(() => {
     if (!tab1Results || !tab2Results) return null;
+    const env = capacityEnvelope;
 
     // Compute max deviation % along the span, returning worst-point values
     const computeMaxDeviation = (demandArr, capArr, demandX, capX) => {
@@ -980,8 +1020,13 @@ export default function BarJoistCalculator() {
       return { maxPct, worstDemand, worstCap };
     };
 
-    const mDev = computeMaxDeviation(tab2Results.M, tab1Results.M, tab2Results.x, tab1Results.x);
-    const vDev = computeMaxDeviation(tab2Results.V, tab1Results.V, tab2Results.x, tab1Results.x);
+    // Use envelope for moment and shear, actual analysis for deflection
+    const mDev = env
+      ? computeMaxDeviation(tab2Results.M, env.M, tab2Results.x, env.x)
+      : computeMaxDeviation(tab2Results.M, tab1Results.M, tab2Results.x, tab1Results.x);
+    const vDev = env
+      ? computeMaxDeviation(tab2Results.V, env.V, tab2Results.x, env.x)
+      : computeMaxDeviation(tab2Results.V, tab1Results.V, tab2Results.x, tab1Results.x);
     const dDev = computeMaxDeviation(tab2Results.defl, tab1Results.defl, tab2Results.x, tab1Results.x);
 
     const mPass = mDev.maxPct < 0.1;
@@ -989,12 +1034,12 @@ export default function BarJoistCalculator() {
     const dPass = dDev.maxPct < 0.1;
 
     return {
-      moment: { cap: tab1Results.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
-      shear: { cap: tab1Results.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
+      moment: { cap: env ? env.maxM : tab1Results.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
+      shear: { cap: env ? env.maxV : tab1Results.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
       deflection: { cap: tab1Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass, devPct: dDev.maxPct, worstDemand: dDev.worstDemand, worstCap: dDev.worstCap },
       overall: mPass && vPass && dPass,
     };
-  }, [tab1Results, tab2Results]);
+  }, [tab1Results, tab2Results, capacityEnvelope]);
 
   // ─── Styles ───
   const s = {
@@ -1254,19 +1299,24 @@ export default function BarJoistCalculator() {
               </div>
 
               {/* Results */}
-              {tab1Results && (
+              {tab1Results && capacityEnvelope && (
                 <>
                   <div style={s.card}>
                     <div style={s.cardTitle}>Capacity Results</div>
-                    <div style={s.grid(3)}>
+                    <div style={s.grid(4)}>
                       <div style={s.resultBox(false)}>
-                        <div style={s.resultLabel}>Max Moment</div>
-                        <div style={{ ...s.resultVal, color: "#38bdf8" }}>{fmt(tab1Results.maxM, 0)}</div>
+                        <div style={s.resultLabel}>Allowable Moment</div>
+                        <div style={{ ...s.resultVal, color: "#38bdf8" }}>{fmt(capacityEnvelope.maxM, 0)}</div>
                         <div style={{ fontSize: 10, color: "#64748b" }}>lb·ft</div>
                       </div>
                       <div style={s.resultBox(false)}>
-                        <div style={s.resultLabel}>Max Shear</div>
-                        <div style={{ ...s.resultVal, color: "#38bdf8" }}>{fmt(tab1Results.maxV, 0)}</div>
+                        <div style={s.resultLabel}>Max Shear (End)</div>
+                        <div style={{ ...s.resultVal, color: "#38bdf8" }}>{fmt(capacityEnvelope.maxV, 0)}</div>
+                        <div style={{ fontSize: 10, color: "#64748b" }}>lb</div>
+                      </div>
+                      <div style={s.resultBox(false)}>
+                        <div style={s.resultLabel}>Shear (Mid-span)</div>
+                        <div style={{ ...s.resultVal, color: "#38bdf8" }}>{fmt(capacityEnvelope.Vcap, 0)}</div>
                         <div style={{ fontSize: 10, color: "#64748b" }}>lb</div>
                       </div>
                       <div style={s.resultBox(false)}>
@@ -1278,9 +1328,9 @@ export default function BarJoistCalculator() {
                   </div>
 
                   <div style={s.card}>
-                    <div style={s.cardTitle}>Diagrams</div>
-                    <Diagram x={tab1Results.x} y={tab1Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" yTickInterval={5000} />
-                    <Diagram x={tab1Results.x} y={tab1Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" yTickInterval={1000} />
+                    <div style={s.cardTitle}>Allowable Capacity Envelopes</div>
+                    <Diagram x={capacityEnvelope.x} y={capacityEnvelope.M} title="Moment Envelope" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" yTickInterval={5000} />
+                    <Diagram x={capacityEnvelope.x} y={capacityEnvelope.V} title="Shear Envelope" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" yTickInterval={1000} />
                     <Diagram x={tab1Results.x} y={tab1Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" />
                   </div>
                 </>
@@ -1530,8 +1580,8 @@ export default function BarJoistCalculator() {
 
                   <div style={s.card}>
                     <div style={s.cardTitle}>Diagrams</div>
-                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.M : undefined} yTickInterval={5000} />
-                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.V : undefined} yTickInterval={1000} />
+                    <Diagram x={tab2Results.x} y={tab2Results.M} title="Moment" unit="lb·ft" color="#3b82f6" fillColor="rgba(59,130,246,0.10)" overlayX={capacityEnvelope ? capacityEnvelope.x : undefined} overlayY={capacityEnvelope ? capacityEnvelope.M : undefined} yTickInterval={5000} />
+                    <Diagram x={tab2Results.x} y={tab2Results.V} title="Shear" unit="lb" color="#f59e0b" fillColor="rgba(245,158,11,0.10)" overlayX={capacityEnvelope ? capacityEnvelope.x : undefined} overlayY={capacityEnvelope ? capacityEnvelope.V : undefined} yTickInterval={1000} />
                     <Diagram x={tab2Results.x} y={tab2Results.defl} title="Deflection" unit="in" color="#06b6d4" fillColor="rgba(6,182,212,0.08)" overlayX={tab1Results ? tab1Results.x : undefined} overlayY={tab1Results ? tab1Results.defl : undefined} />
                   </div>
                 </>
