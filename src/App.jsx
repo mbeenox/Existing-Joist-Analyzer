@@ -228,6 +228,8 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
       .attr("stroke", "#64748b").attr("stroke-width", 1)
       .attr("stroke-dasharray", "4,3");
 
+    const isDeflection = unit === "in";
+
     // ── Exceedance highlight zones with % labels ──
     if (hasOverlay) {
       const bandH = h / 8;
@@ -242,11 +244,11 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
         return Math.abs(overlayY[idx-1] + t * (overlayY[idx] - overlayY[idx-1]));
       };
 
-      // Collect exceedance zones: [{start, end, maxPct}]
+      // Collect exceedance zones: [{start, end, maxDev}]
       const zones = [];
       let inExceed = false;
       let exceedStart = 0;
-      let zoneMaxPct = 0;
+      let zoneMaxDev = 0;
       const step = Math.max(1, Math.floor(y.length / 500));
 
       for (let i = 0; i <= y.length; i += (i < y.length ? step : 0)) {
@@ -255,25 +257,25 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
         const demandVal = Math.abs(y[i]);
         const capVal = getCapAt(xi);
         const exceeds = demandVal > capVal * 1.001;
-        const pct = capVal > 0 ? ((demandVal - capVal) / capVal) * 100 : (demandVal > 0 ? 100 : 0);
+        const dev = demandVal - capVal;
 
         if (exceeds && !inExceed) {
           exceedStart = xi;
-          zoneMaxPct = pct;
+          zoneMaxDev = dev;
           inExceed = true;
         } else if (exceeds && inExceed) {
-          zoneMaxPct = Math.max(zoneMaxPct, pct);
+          zoneMaxDev = Math.max(zoneMaxDev, dev);
         } else if (!exceeds && inExceed) {
-          zones.push({ start: exceedStart, end: xi, maxPct: zoneMaxPct });
+          zones.push({ start: exceedStart, end: xi, maxDev: zoneMaxDev });
           inExceed = false;
         }
         if (i === y.length - 1) {
-          if (inExceed) zones.push({ start: exceedStart, end: xi, maxPct: zoneMaxPct });
+          if (inExceed) zones.push({ start: exceedStart, end: xi, maxDev: zoneMaxDev });
           break;
         }
       }
 
-      // Draw zones with % labels
+      // Draw zones with deviation value labels
       for (const zone of zones) {
         const zx1 = xScale(zone.start);
         const zx2 = xScale(zone.end);
@@ -282,13 +284,15 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
           .attr("x", zx1).attr("y", bandY)
           .attr("width", zw).attr("height", bandH)
           .attr("fill", "#ef4444").attr("opacity", 0.15).attr("rx", 2);
-        // % label centered on zone
-        const pctLabel = zone.maxPct < 1 ? "<1%" : Math.round(zone.maxPct) + "%";
+        // Format deviation value based on unit
+        const devLabel = isDeflection
+          ? "+" + zone.maxDev.toFixed(3) + " in"
+          : "+" + Math.round(zone.maxDev).toLocaleString() + " " + unit;
         g.append("text")
           .attr("x", zx1 + zw / 2).attr("y", bandY + bandH / 2 + 3.5)
           .attr("text-anchor", "middle")
           .attr("fill", "#ef4444").attr("font-size", "9px").attr("font-weight", 700)
-          .text("+" + pctLabel);
+          .text(devLabel);
       }
     }
 
@@ -350,7 +354,6 @@ function Diagram({ x, y, title, unit, color, capacityLine, fillColor, overlayX, 
     }
 
     // Format y-axis numbers
-    const isDeflection = unit === "in";
     if (isDeflection) {
       yAxis.tickFormat(d => d === 0 ? "0" : d.toFixed(3));
     } else {
@@ -683,6 +686,937 @@ function CautionInput({ label, value, defaultValue, onChange, unit, disabled }) 
   );
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// OWSJ REINFORCEMENT CHECK — TAB 3 (integrated from OWSJReinforcementCalc)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ─── Engineering helpers ──────────────────────────────────────────────────────
+const rodArea = (d) => Math.PI * d * d / 4;
+const rodRx   = (d) => d / 4;
+
+const ROD_SIZES = [
+  { label: '1/4" ROD',  dia: 0.25  },
+  { label: '3/8" ROD',  dia: 0.375 },
+  { label: '1/2" ROD',  dia: 0.5   },
+  { label: '5/8" ROD',  dia: 0.625 },
+  { label: '3/4" ROD',  dia: 0.75  },
+];
+
+function computeResults(inputs) {
+  const {
+    span, depth,
+    RE, dM,
+    fp,
+    deflLimit, Iunreinf, deflUnreinf,
+    l1, l2, braced,
+    webDia, webFy, webE, webFu, weldSize, weldLen, U,
+    chordDia, chordFy, chordFu, chordE, chordWeldSpacing, chordU,
+  } = inputs;
+
+  const OMEGA_T = 1.67;
+  const OMEGA_T2 = 2.00;   // for rupture term Fu·U·Ag / 2.00
+  const OMEGA_C = 1.67;
+
+  // ── SHEAR ───────────────────────────────────────────────────────────────────
+  const shearReqd = RE > 0;
+
+  const phi      = 90 - Math.atan(l1 / depth) * 180 / Math.PI;
+  const alpha    = Math.atan(2 * depth / l2) * 180 / Math.PI;
+  const phiRad   = phi   * Math.PI / 180;
+  const alphaRad = alpha * Math.PI / 180;
+
+  const TE = shearReqd ? RE / Math.sin(phiRad) : 0;
+  const CE = shearReqd ? TE * Math.sin(phiRad) / Math.sin(alphaRad) : 0;
+
+  const webAg     = rodArea(webDia) * 2;   // 2 members, one each side
+  const FyAdj     = webFy - fp;
+
+  // Tension: Pn/Ωt = min( F'y·Ag / 1.67 ,  Fu·U·Ag / 2.00 )
+  const webTensYield   = FyAdj * webAg / OMEGA_T;
+  const webTensRupture = webFu * U * webAg / OMEGA_T2;
+  const webTensCap     = Math.min(webTensYield, webTensRupture);
+
+  // Weld: 0.6 · 60ksi(electrode) · 0.707 · weld_size · weld_length · 2
+  const weldCapacity = 0.6 * 60 * 0.707 * weldSize * weldLen * 2;
+
+  // Compression — end web member
+  const memberLen  = (l2 / 2) / Math.cos(alphaRad);
+  const rx         = rodRx(webDia);
+  const KL         = braced ? memberLen / 2 : memberLen;
+  const KLr        = KL / rx;
+  const Fe         = Math.PI * Math.PI * webE / (KLr * KLr);
+  const Fcr        = Fe >= 0.44 * webFy
+    ? webFy * Math.pow(0.658, webFy / Fe)
+    : 0.877 * Fe;
+  const webCompCap = Fcr * webAg / OMEGA_C;
+
+  const webTensOK  = !shearReqd || webTensCap  >= TE;
+  const weldTensOK = !shearReqd || weldCapacity >= TE;
+  const webCompOK  = !shearReqd || webCompCap   >= CE;
+  const weldCompOK = !shearReqd || weldCapacity >= CE;
+
+  // ── MOMENT ──────────────────────────────────────────────────────────────────
+  const momentReqd = dM > 0;
+  const Deff       = depth / 12;
+  const dP         = momentReqd ? dM / Deff : 0;
+
+  const chordAg    = rodArea(chordDia) * 2;
+  const chordRxVal = rodRx(chordDia);
+  const chordKLr   = chordWeldSpacing / chordRxVal;
+  const chordFe    = Math.PI * Math.PI * chordE / (chordKLr * chordKLr);
+  const chordFcr   = chordFe >= 0.44 * chordFy
+    ? chordFy * Math.pow(0.658, chordFy / chordFe)
+    : 0.877 * chordFe;
+
+  // Chord tension: min( Fy·Ag/1.67 ,  Fu·U·Ag/2.00 )
+  const chordTensYield   = chordFy * chordAg / OMEGA_T;
+  const chordTensRupture = chordFu * chordU * chordAg / OMEGA_T2;
+  const chordTensCap     = Math.min(chordTensYield, chordTensRupture);
+  const chordCompCap     = chordFcr * chordAg / OMEGA_C;
+
+  const chordTensOK = !momentReqd || chordTensCap >= Math.abs(dP);
+  const chordCompOK = !momentReqd || chordCompCap >= Math.abs(dP);
+
+  // ── DEFLECTION ──────────────────────────────────────────────────────────────
+  // I_added = 2 * ( 2*(π·d⁴/64) + Ag*(D/2 - 0.5 - d/2)² )
+  //   d  = chord rod diameter (in)
+  //   Ag = area of 2 rods (in²)
+  //   D  = joist depth (in)
+  //   0.5 = chord vertical offset (in)
+  const Irod_self  = Math.PI * Math.pow(chordDia, 4) / 64;        // one rod self I
+  const e          = depth / 2 - 0.5 - chordDia / 2;              // centroid offset from NA
+  const Iadded     = 2 * (2 * Irod_self + chordAg * e * e);       // both chords (top+bottom)
+  const Ireinf     = Iunreinf + Iadded;
+
+  const deflReinf     = deflUnreinf * Iunreinf / Ireinf;
+  const deflAllowable = (span * 12) / deflLimit;
+  const deflOK        = deflReinf <= deflAllowable;
+  const LoverDeflU    = Math.round((span * 12) / deflUnreinf);
+  const LoverDeflR    = Math.round((span * 12) / deflReinf);
+
+  const allOK = webTensOK && weldTensOK && webCompOK && weldCompOK
+              && chordTensOK && chordCompOK
+              && deflOK;
+
+  return {
+    RE, shearReqd,
+    phi, alpha, TE, CE,
+    webAg, FyAdj,
+    webTensYield, webTensRupture, webTensCap, weldCapacity,
+    memberLen, rx, KLr, Fe, Fcr, webCompCap,
+    webTensOK, weldTensOK, webCompOK, weldCompOK,
+    dM, dP, momentReqd,
+    chordAg, chordRxVal, chordKLr, chordFe, chordFcr,
+    chordTensYield, chordTensRupture, chordTensCap, chordCompCap,
+    chordTensOK, chordCompOK,
+    deflReinf, deflAllowable, deflOK, LoverDeflU, LoverDeflR,
+    Iadded, Ireinf,
+    allOK,
+  };
+}
+
+// ─── Design tokens ────────────────────────────────────────────────────────────
+const TR = {
+  bg0: "#0a0d13",
+  bg1: "#0f1319",
+  bg2: "#141920",
+  bg3: "#1a2030",
+  border: "#1e2638",
+  borderHi: "#2a3550",
+  text0: "#e8edf5",
+  text1: "#8896b0",
+  text2: "#3d4d68",
+  blue: "#4d9fff",
+  teal: "#3de8b0",
+  amber: "#f5a742",
+  red: "#f56060",
+  green: "#4dcc8a",
+  purple: "#b07fff",
+  mono: "'IBM Plex Mono', 'Courier New', monospace",
+};
+
+const sR = {
+  page:        { fontFamily: TR.mono, background: TR.bg0, minHeight: "100vh", color: TR.text0 },
+  header:      { background: TR.bg1, borderBottom: `1px solid ${TR.border}`, padding: "18px 28px 14px", position: "sticky", top: 0, zIndex: 10 },
+  hTitle:      { fontSize: 11, fontWeight: 700, letterSpacing: "0.18em", color: TR.teal, textTransform: "uppercase", margin: 0 },
+  hSub:        { fontSize: 10, color: TR.text2, letterSpacing: "0.08em", marginTop: 3 },
+  main:        { padding: "22px 28px 40px", maxWidth: 960, margin: "0 auto" },
+
+  // Demand row — full width at top
+  demandBox:   { background: TR.bg2, border: `1px solid ${TR.amber}44`, borderRadius: 6, padding: "16px 20px", marginBottom: 20 },
+  demandTitle: { fontSize: 9, fontWeight: 700, letterSpacing: "0.16em", color: TR.amber, textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 7 },
+  demandDot:   { width: 6, height: 6, borderRadius: "50%", background: TR.amber, flexShrink: 0 },
+  demandNote:  { fontSize: 9, color: TR.text2, marginTop: 8, lineHeight: 1.7, borderTop: `1px solid ${TR.border}`, paddingTop: 8 },
+  demandRow:   { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
+
+  // Module = full-width card with inputs on left, results panel on right
+  module:      { background: TR.bg1, border: `1px solid ${TR.border}`, borderRadius: 8, marginBottom: 16, overflow: "hidden" },
+  moduleHead:  (c) => ({ background: TR.bg2, borderBottom: `1px solid ${TR.border}`, padding: "10px 18px", display: "flex", alignItems: "center", gap: 8, fontSize: 9, fontWeight: 700, letterSpacing: "0.16em", color: c, textTransform: "uppercase" }),
+  moduleDot:   (c) => ({ width: 6, height: 6, borderRadius: "50%", background: c, flexShrink: 0 }),
+  moduleBody:  { display: "grid", gridTemplateColumns: "320px 1fr", minHeight: 0 },
+  moduleLeft:  { padding: "16px 18px", borderRight: `1px solid ${TR.border}` },
+  moduleRight: { padding: 0 },
+
+  // Input fields
+  fRow:        { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 },
+  fRow3:       { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 },
+  fRowFull:    { marginBottom: 10 },
+  field:       { display: "flex", flexDirection: "column", gap: 3 },
+  flabel:      { fontSize: 9, color: TR.text2, letterSpacing: "0.09em", textTransform: "uppercase" },
+  fnote:       { fontSize: 9, color: TR.text2, lineHeight: 1.4, marginTop: 1 },
+  input:       { background: TR.bg0, border: `1px solid ${TR.border}`, borderRadius: 3, color: TR.text0, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono, outline: "none", width: "100%", boxSizing: "border-box" },
+  select:      { background: TR.bg0, border: `1px solid ${TR.border}`, borderRadius: 3, color: TR.text0, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono, outline: "none", cursor: "pointer", width: "100%", boxSizing: "border-box" },
+
+  // Results within module
+  rSubHead:    (c) => ({ padding: "7px 14px 3px", fontSize: 9, color: c || TR.text2, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600, borderBottom: `1px solid ${TR.border}` }),
+  rRow:        { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 14px", borderBottom: `1px solid ${TR.bg0}`, fontSize: 11 },
+  rRowHL:      { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 14px", borderBottom: `1px solid ${TR.bg0}`, fontSize: 11, background: "#141920" },
+  rLabel:      { color: TR.text1 },
+  rVal:        { color: TR.text0, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 },
+  rNote:       { fontSize: 9, color: TR.text2, marginTop: 1 },
+  mGrid:       { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, borderBottom: `1px solid ${TR.border}` },
+  mCell:       { background: TR.bg2, padding: "10px 14px" },
+  mLabel:      { fontSize: 9, color: TR.text2, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 },
+  mVal:        { fontSize: 15, fontWeight: 600, color: TR.text0 },
+  mSub:        { fontSize: 10, color: TR.text1, marginTop: 1 },
+  divider:     { border: "none", borderTop: `1px solid ${TR.border}`, margin: "2px 0" },
+
+  badge:       (ok, na) => ({
+    fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 2, letterSpacing: "0.1em",
+    background: na ? TR.bg3 : ok ? "rgba(61,232,176,0.1)" : "rgba(245,96,96,0.1)",
+    color:      na ? TR.text2 : ok ? TR.teal : TR.red,
+    border:     `1px solid ${na ? TR.border : ok ? "rgba(61,232,176,0.25)" : "rgba(245,96,96,0.25)"}`,
+  }),
+  govBadge:    { fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 2, letterSpacing: "0.1em", background: "rgba(176,127,255,0.12)", color: TR.purple, border: "1px solid rgba(176,127,255,0.25)" },
+
+  // Run button
+  btnWrap:     { marginTop: 16 },
+  btn:         (hov) => ({ width: "100%", padding: "10px 0", background: hov ? "rgba(77,159,255,0.08)" : "transparent", border: `1px solid ${hov ? TR.blue : TR.borderHi}`, borderRadius: 4, color: TR.blue, fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", cursor: "pointer", fontFamily: TR.mono, transition: "all 0.15s" }),
+
+  bannerOK:    { background: "rgba(61,232,176,0.06)", border: `1px solid rgba(61,232,176,0.25)`, borderRadius: 5, padding: "12px 18px", fontSize: 11, color: TR.teal, marginTop: 4, letterSpacing: "0.04em" },
+  bannerNG:    { background: "rgba(245,96,96,0.06)",  border: `1px solid rgba(245,96,96,0.25)`,  borderRadius: 5, padding: "12px 18px", fontSize: 11, color: TR.red,  marginTop: 4, letterSpacing: "0.04em" },
+  footer:      { fontSize: 9, color: TR.text2, marginTop: 20, lineHeight: 1.8 },
+};
+
+// ─── Small components ─────────────────────────────────────────────────────────
+function F({ label, note, children }) {
+  return (
+    <div style={sR.field}>
+      <span style={sR.flabel}>{label}</span>
+      {children}
+      {note && <span style={sR.fnote}>{note}</span>}
+    </div>
+  );
+}
+
+function NI({ value, onChange, step = 0.001, min }) {
+  return (
+    <input type="number" style={sR.input} value={value} step={step} min={min}
+      onChange={e => onChange(parseFloat(e.target.value) || 0)} />
+  );
+}
+
+function RS({ value, onChange }) {
+  return (
+    <select style={sR.select} value={value} onChange={e => onChange(parseFloat(e.target.value))}>
+      {ROD_SIZES.map(r => <option key={r.dia} value={r.dia}>{r.label}</option>)}
+    </select>
+  );
+}
+
+// Read-only locked display
+function LI({ value }) {
+  return (
+    <div style={{
+      background: TR.bg3, border: `1px solid ${TR.border}`, borderRadius: 3,
+      color: TR.text1, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono,
+      minHeight: 28, display: "flex", alignItems: "center",
+    }}>{value}</div>
+  );
+}
+
+// Edit / Lock toggle button for module headers
+function EditBtn({ locked, onToggle }) {
+  return (
+    <button onClick={onToggle} style={{
+      marginLeft: "auto",
+      background: "transparent",
+      border: `1px solid ${locked ? TR.borderHi : TR.amber}`,
+      borderRadius: 3,
+      color: locked ? TR.text2 : TR.amber,
+      fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
+      textTransform: "uppercase", fontFamily: TR.mono,
+      padding: "2px 10px", cursor: "pointer",
+    }}>{locked ? "Edit" : "Lock"}</button>
+  );
+}
+
+function Badge({ ok, na }) {
+  return <span style={sR.badge(ok, na)}>{na ? "N/A" : ok ? "O.K." : "N.G."}</span>;
+}
+
+function RRow({ label, value, ok, na, highlight, governs }) {
+  return (
+    <div style={highlight ? sR.rRowHL : sR.rRow}>
+      <span style={sR.rLabel}>{label}</span>
+      <span style={sR.rVal}>
+        <span>{value}</span>
+        {governs && <span style={sR.govBadge}>governs</span>}
+        {(ok !== undefined || na) && <Badge ok={ok} na={na} />}
+      </span>
+    </div>
+  );
+}
+
+function MPair({ a, b }) {
+  return (
+    <div style={sR.mGrid}>
+      {[a, b].map((m, i) => (
+        <div key={i} style={sR.mCell}>
+          <div style={sR.mLabel}>{m.label}</div>
+          <div style={sR.mVal}>{m.value}</div>
+          {m.sub && <div style={sR.mSub}>{m.sub}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ModuleHead({ color, children, editBtn }) {
+  return (
+    <div style={{ ...sR.moduleHead(color), justifyContent: "space-between" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={sR.moduleDot(color)} />
+        {children}
+      </div>
+      {editBtn}
+    </div>
+  );
+}
+
+// ─── Joist web geometry diagram ──────────────────────────────────────────────
+function WebDiagram({ depth, l1, l2, phi, alpha }) {
+  // Canvas
+  const W = 360, H = 200;
+  // Margins: left for DEPTH label, top for chord clearance, bottom for dim arrows
+  const ml = 56, mr = 10, mt = 10, mb = 46;
+  const dw = W - ml - mr;
+  const dh = H - mt - mb;
+
+  // Horizontal scale: show l1 + 3*l2 so we get the full warren context
+  const totalSpan = l1 + 3 * l2;
+  const sx = dw / totalSpan;
+
+  // Key x coordinates (all in SVG pixels)
+  const xA = ml;                   // Node A — top-left, start of T_E
+  const xB = ml + l1 * sx;        // Node B — bottom-left, end of T_E / start of C_E
+  const xC = xB + l2 * sx;        // Node C — top, end of C_E
+  const xD = xC + l2 * sx;        // Node D — bottom
+  const xE = xD + l2 * sx;        // Node E — top (right edge)
+
+  // y coordinates
+  const yT = mt;        // top chord
+  const yB = mt + dh;   // bottom chord
+
+  // ── Angles computed from pixel geometry — used only for arc drawing ──
+  const phiRad   = Math.atan2(yB - yT, xB - xA);
+  const alphaDraw = Math.atan2(yB - yT, xC - xB);
+
+  // Display values come from the engineering calculation (matches results panel)
+  const phiDeg   = phi.toFixed(1);
+  const alphaDeg = alpha.toFixed(1);
+
+  // ── Dashed reference line ──
+  // In the reference image a dashed line goes from a point on the top chord
+  // (roughly above where T_E's midpoint is) down to node B, showing angle construction.
+  // It represents the "second adjacent web" going top→B from x midpoint of l1.
+  const xMid = xA + (xB - xA) * 0.5;  // midpoint of l1 along top chord
+  // dash goes from (xMid, yT) down to B
+  const dashX1 = xMid, dashY1 = yT;
+  const dashX2 = xB,   dashY2 = yB;
+
+  const DIM = "#3d4d68";
+  const LBL = "#8896b0";
+  const ANG = TR.teal;
+  const CH  = TR.text0;
+  const RE  = TR.amber;
+  const EX  = "#4a5568";
+
+  // Arrowhead helper: draw a simple triangle at end of dimension line
+  // We just use polyline + small triangles rather than SVG markers (avoids refX issues)
+  const arr = (x, y, dir) => {
+    // dir: "R","L","U","D"
+    const s = 5;
+    const pts = {
+      R: `${x},${y-s*0.5} ${x+s},${y} ${x},${y+s*0.5}`,
+      L: `${x},${y-s*0.5} ${x-s},${y} ${x},${y+s*0.5}`,
+      U: `${x-s*0.5},${y} ${x},${y-s} ${x+s*0.5},${y}`,
+      D: `${x-s*0.5},${y} ${x},${y+s} ${x+s*0.5},${y}`,
+    }[dir];
+    return <polygon points={pts} fill={DIM} />;
+  };
+
+  return (
+    <div style={{ marginTop: 14, borderTop: `1px solid ${TR.border}`, paddingTop: 12 }}>
+      <div style={{ fontSize: 9, color: TR.text2, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 4 }}>
+        Joist web member layout
+      </div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+
+        {/* ══ CHORDS ══ */}
+        {/* Top chord — full width, thick */}
+        <line x1={xA} y1={yT} x2={W - mr} y2={yT} stroke={CH} strokeWidth="4" strokeLinecap="square" />
+        {/* Bottom chord — starts at B */}
+        <line x1={xB - 1} y1={yB} x2={W - mr} y2={yB} stroke={CH} strokeWidth="4" strokeLinecap="square" />
+
+        {/* ══ DASHED REFERENCE LINE ══ */}
+        {/* From midpoint of l1 on top chord diagonally to node B */}
+        <line x1={dashX1} y1={dashY1} x2={dashX2} y2={dashY2}
+          stroke={LBL} strokeWidth="1.4" strokeDasharray="6 4" />
+
+        {/* ══ HIGHLIGHTED WEB MEMBERS (T_E and C_E) ══ */}
+        <line x1={xA} y1={yT} x2={xB} y2={yB} stroke={RE} strokeWidth="2.8" strokeLinecap="round" />
+        <line x1={xB} y1={yB} x2={xC} y2={yT} stroke={RE} strokeWidth="2.8" strokeLinecap="round" />
+
+        {/* ══ ADDITIONAL WARREN PANELS (context) ══ */}
+        <line x1={xC} y1={yT} x2={xD} y2={yB} stroke={EX} strokeWidth="2" strokeLinecap="round" />
+        <line x1={xD} y1={yB} x2={xE} y2={yT} stroke={EX} strokeWidth="2" strokeLinecap="round" />
+
+        {/* ══ NODE DOT at B ══ */}
+        <circle cx={xB} cy={yB} r="4" fill={RE} />
+
+        {/* ══ φ ARC at A ══
+            φ = angle from HORIZONTAL (top chord, rightward) down to T_E
+            Arc sweeps clockwise from (xA+r, yT) to the T_E direction */}
+        {(() => {
+          const r = 28;
+          // Start point: horizontal right along top chord from A
+          const p1x = xA + r;
+          const p1y = yT;
+          // End point: along T_E unit vector scaled by r
+          const len  = Math.sqrt((xB - xA) ** 2 + (yB - yT) ** 2);
+          const p2x  = xA + r * (xB - xA) / len;
+          const p2y  = yT + r * (yB - yT) / len;
+          // φ from horizontal = atan2(dy, dx) of T_E
+          const phiFromHoriz = Math.atan2(yB - yT, xB - xA);
+          // Label at arc bisector (halfway between horizontal and T_E direction)
+          const bisR = phiFromHoriz / 2;
+          const lx   = xA + (r + 12) * Math.cos(bisR);
+          const ly   = yT + (r +  4) * Math.sin(bisR);
+          return (
+            <>
+              <path d={`M ${p1x} ${p1y} A ${r} ${r} 0 0 1 ${p2x} ${p2y}`}
+                fill="none" stroke={ANG} strokeWidth="1.5" />
+              <text x={lx} y={ly} textAnchor="middle" fontSize="11"
+                fill={ANG} fontFamily={TR.mono} fontWeight="700">φ</text>
+              <text x={lx + 14} y={ly} textAnchor="start" fontSize="8"
+                fill={ANG} fontFamily={TR.mono}>{phiDeg}°</text>
+            </>
+          );
+        })()}
+
+        {/* ══ α ARC at B ══
+            α = angle from HORIZONTAL (right) to C_E
+            Arc sweeps counter-clockwise from (xB+r, yB) up to C_E direction */}
+        {(() => {
+          const r = 26;
+          // Start: horizontal right
+          const p1x = xB + r;
+          const p1y = yB;
+          // End: along C_E unit vector from B
+          const len  = Math.sqrt((xC-xB)**2 + (yT-yB)**2);
+          const p2x  = xB + r * (xC-xB) / len;
+          const p2y  = yB + r * (yT-yB) / len;  // yT-yB is negative → goes up
+          // Label at bisector
+          const bisR = alphaDraw / 2;
+          const lx   = xB + (r + 10) * Math.cos(bisR);
+          const ly   = yB - (r +  4) * Math.sin(bisR);
+          return (
+            <>
+              {/* horizontal reference tick */}
+              <line x1={xB} y1={yB} x2={xB + r + 4} y2={yB}
+                stroke={ANG} strokeWidth="0.8" strokeDasharray="3 2" opacity="0.5" />
+              <path d={`M ${p1x} ${p1y} A ${r} ${r} 0 0 0 ${p2x} ${p2y}`}
+                fill="none" stroke={ANG} strokeWidth="1.5" />
+              <text x={lx} y={ly} textAnchor="middle" fontSize="11"
+                fill={ANG} fontFamily={TR.mono} fontWeight="700">α</text>
+              <text x={lx + 14} y={ly} textAnchor="start" fontSize="8"
+                fill={ANG} fontFamily={TR.mono}>{alphaDeg}°</text>
+            </>
+          );
+        })()}
+
+        {/* ══ MEMBER LABELS ══ */}
+        {/* T_E — positioned left of and below midpoint of the member */}
+        <text x={(xA + xB) / 2 - 16} y={(yT + yB) / 2 + 6}
+          fontSize="10" fill={RE} fontFamily={TR.mono} fontWeight="700">T_E</text>
+        {/* C_E — positioned right of and above midpoint */}
+        <text x={(xB + xC) / 2 + 8} y={(yT + yB) / 2 - 4}
+          fontSize="10" fill={RE} fontFamily={TR.mono} fontWeight="700">C_E</text>
+
+        {/* ══ DEPTH DIMENSION (left side) ══ */}
+        {(() => {
+          const dx = ml - 26;
+          return (
+            <>
+              <line x1={dx} y1={yT + 5} x2={dx} y2={yB - 5} stroke={DIM} strokeWidth="1" />
+              {arr(dx, yT + 5, "U")}
+              {arr(dx, yB - 5, "D")}
+              <line x1={dx - 6} y1={yT} x2={dx + 6} y2={yT} stroke={DIM} strokeWidth="0.8" />
+              <line x1={dx - 6} y1={yB} x2={dx + 6} y2={yB} stroke={DIM} strokeWidth="0.8" />
+              <text x={dx - 8} y={(yT + yB) / 2 + 3} textAnchor="middle" fontSize="9"
+                fill={LBL} fontFamily={TR.mono}
+                transform={`rotate(-90,${dx - 8},${(yT + yB) / 2})`}>
+                d = {depth} in
+              </text>
+            </>
+          );
+        })()}
+
+        {/* ══ l₁ DIMENSION (bottom) ══ */}
+        {(() => {
+          const dy = yB + 20;
+          return (
+            <>
+              <line x1={xA + 5} y1={dy} x2={xB - 5} y2={dy} stroke={DIM} strokeWidth="1" />
+              {arr(xA + 5, dy, "L")}
+              {arr(xB - 5, dy, "R")}
+              <line x1={xA} y1={yB + 13} x2={xA} y2={yB + 27} stroke={DIM} strokeWidth="0.8" />
+              <line x1={xB} y1={yB + 13} x2={xB} y2={yB + 27} stroke={DIM} strokeWidth="0.8" />
+              <text x={(xA + xB) / 2} y={yB + 40} textAnchor="middle" fontSize="10"
+                fill={LBL} fontFamily={TR.mono}>l₁ = {l1} in</text>
+            </>
+          );
+        })()}
+
+        {/* ══ l₂ DIMENSION (bottom) ══ */}
+        {(() => {
+          const dy = yB + 20;
+          return (
+            <>
+              <line x1={xB + 5} y1={dy} x2={xC - 5} y2={dy} stroke={DIM} strokeWidth="1" />
+              {arr(xB + 5, dy, "L")}
+              {arr(xC - 5, dy, "R")}
+              <line x1={xC} y1={yB + 13} x2={xC} y2={yB + 27} stroke={DIM} strokeWidth="0.8" />
+              <text x={(xB + xC) / 2} y={yB + 40} textAnchor="middle" fontSize="10"
+                fill={LBL} fontFamily={TR.mono}>l₂ = {l2} in</text>
+            </>
+          );
+        })()}
+
+        {/* ══ DEPTH value on left (vertical label) ══ */}
+
+      </svg>
+    </div>
+  );
+}
+
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+const DEFAULTS = {
+  span: 30.67, depth: 26,
+  RE: 0.162,
+  dM: 0,
+  fp: 0,
+  deflLimit: 240, Iunreinf: 125.59, deflUnreinf: 1.613,
+  l1: 36, l2: 24, braced: true,
+  webDia: 0.375, webFy: 36, webE: 29000, webFu: 58,
+  weldSize: 0.125, weldLen: 1.0, U: 0.625,
+  chordDia: 0.5, chordFy: 36, chordFu: 58, chordE: 29000, chordWeldSpacing: 12, chordU: 1.0,
+};
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+export function OWSJReinforcementCalc({
+  span        = 30.67,
+  depth       = 26,
+  RE          = 0,
+  dM          = 0,
+  Iunreinf    = 0,
+  deflUnreinf = 0,
+  // Lifted state — owned by parent so it survives tab switches
+  inp, setInp,
+  webLocked, setWebLocked,
+  chordLocked, setChordLocked,
+}) {
+  useEffect(() => {
+    setInp(prev => ({ ...prev, span, depth, RE, dM, Iunreinf, deflUnreinf }));
+  }, [span, depth, RE, dM, Iunreinf, deflUnreinf]);
+
+  const R = useMemo(() => computeResults(inp), [inp]);
+
+  const set = useCallback((k) => (v) => setInp(p => ({ ...p, [k]: v })), []);
+
+  const f   = (v, d = 3) => typeof v === "number" ? v.toFixed(d) : "—";
+  const fki = (v, d = 3) => f(v, d) + " kips";
+  const fks = (v, d = 2) => f(v, d) + " ksi";
+  const fi2 = (v)        => f(v, 4) + " in²";
+  const fin = (v, d = 3) => f(v, d) + " in";
+  const fdg = (v)        => f(v, 1) + "°";
+
+  const yieldGoverns   = R.webTensYield   <= R.webTensRupture;
+  const ruptureGoverns = R.webTensRupture <  R.webTensYield;
+
+  const chYieldGoverns   = R.chordTensYield   <= R.chordTensRupture;
+  const chRuptureGoverns = R.chordTensRupture <  R.chordTensYield;
+
+  return (
+    <div style={sR.main}>
+
+        {/* ── DEMAND ── */}
+        <div style={sR.demandBox}>
+          <div style={sR.demandTitle}>
+            <span style={sR.demandDot} />
+            Required reinforcement demand
+          </div>
+          <div style={sR.demandRow}>
+            <F label="Add'l shear force req'd RE (kips)" note="From Tab 2 joist analysis">
+              <LI value={typeof inp.RE === 'number' ? inp.RE.toFixed(3) : '0.000'} />
+            </F>
+            <F label="Add'l moment req'd ΔM (k·ft)" note="From Tab 2 joist analysis">
+              <LI value={typeof inp.dM === 'number' ? inp.dM.toFixed(3) : '0.000'} />
+            </F>
+          </div>
+          <div style={sR.demandNote}>
+            RE and ΔM come from an independent shear/moment analysis of the existing joist under total new load.
+          </div>
+        </div>
+
+        {/* ── MODULE 1: JOIST GEOMETRY ── */}
+        <div style={sR.module}>
+          <ModuleHead color={TR.blue}>Joist geometry</ModuleHead>
+          <div style={{ padding: "14px 18px" }}>
+            <div style={sR.fRow}>
+              <F label="Span L (ft)" note="From Tab 1 joist selection"><LI value={typeof inp.span === 'number' ? inp.span.toFixed(2) : inp.span} /></F>
+              <F label="Depth d (in)" note="From joist designation"><LI value={typeof inp.depth === 'number' ? inp.depth.toFixed(0) : inp.depth} /></F>
+              <F label="Prestress f_p (ksi)" note="In-place dead load stress"><NI value={inp.fp} onChange={set("fp")} step={0.1} /></F>
+            </div>
+          </div>
+        </div>
+
+        {/* ── MODULE 2: WEB REINFORCING (SHEAR) ── */}
+        <div style={sR.module}>
+          <ModuleHead color={TR.amber} editBtn={<EditBtn locked={webLocked} onToggle={() => setWebLocked(l => !l)} />}>
+            Web reinforcing — shear check
+          </ModuleHead>
+          <div style={sR.moduleBody}>
+
+            {/* Inputs */}
+            <div style={sR.moduleLeft}>
+              <div style={sR.fRow}>
+                <F label="Rod size (ea. side)"><RS value={inp.webDia} onChange={set("webDia")} /></F>
+                <F label="F_y (ksi)">{webLocked ? <LI value={inp.webFy} /> : <NI value={inp.webFy} onChange={set("webFy")} step={1} />}</F>
+              </div>
+              <div style={sR.fRow}>
+                <F label="E (ksi)">{webLocked ? <LI value={inp.webE} /> : <NI value={inp.webE} onChange={set("webE")} step={1000} />}</F>
+                <F label="F_u (ksi)">{webLocked ? <LI value={inp.webFu} /> : <NI value={inp.webFu} onChange={set("webFu")} step={1} />}</F>
+              </div>
+              <div style={sR.fRow}>
+                <F label="Weld size (in)">{webLocked ? <LI value={inp.weldSize} /> : <NI value={inp.weldSize} onChange={set("weldSize")} step={0.0625} />}</F>
+                <F label="Weld length (in/end)">{webLocked ? <LI value={inp.weldLen} /> : <NI value={inp.weldLen} onChange={set("weldLen")} step={0.25} />}</F>
+              </div>
+              <div style={sR.fRow}>
+                <F label="Shear lag U">{webLocked ? <LI value={inp.U} /> : <NI value={inp.U} onChange={set("U")} step={0.025} />}</F>
+                <F label="l₁ near panel (in)">{webLocked ? <LI value={inp.l1} /> : <NI value={inp.l1} onChange={set("l1")} step={0.5} />}</F>
+              </div>
+              <div style={sR.fRow}>
+                <F label="l₂ far panel (in)">{webLocked ? <LI value={inp.l2} /> : <NI value={inp.l2} onChange={set("l2")} step={0.5} />}</F>
+                <F label="Braced mid-pt?">
+                  {webLocked
+                    ? <LI value={inp.braced ? "Yes — KL = L/2" : "No  — KL = L"} />
+                    : <select style={sR.select} value={inp.braced ? "Y" : "N"}
+                        onChange={e => setInp(p => ({ ...p, braced: e.target.value === "Y" }))}>
+                        <option value="Y">Yes — KL = L/2</option>
+                        <option value="N">No  — KL = L</option>
+                      </select>
+                  }
+                </F>
+              </div>
+
+              {/* Joist web geometry diagram */}
+              <WebDiagram depth={inp.depth} l1={inp.l1} l2={inp.l2} phi={R.phi} alpha={R.alpha} />
+            </div>
+
+            {/* Results */}
+            <div style={sR.moduleRight}>
+              <MPair
+                a={{ label: "Req'd shear RE", value: R.shearReqd ? fki(R.RE) : "0.000 kips", sub: R.shearReqd ? "" : "no web reinf. req'd" }}
+                b={{ label: "Web angle φ / α", value: fdg(R.phi) + " / " + fdg(R.alpha) }}
+              />
+              <MPair
+                a={{ label: "Tension force TE", value: R.shearReqd ? fki(R.TE) : "—" }}
+                b={{ label: "Comp. force CE",   value: R.shearReqd ? fki(R.CE) : "—" }}
+              />
+
+              <div style={sR.rSubHead(TR.amber)}>Tension check</div>
+              <RRow label="Rod area Ag (2 members)"            value={fi2(R.webAg)} />
+              <RRow label="F′y = Fy − fp"                      value={fks(R.FyAdj)} />
+              <RRow label="Yield  →  F′y·Ag / 1.67"
+                value={fki(R.webTensYield)}
+                governs={yieldGoverns}
+                highlight={yieldGoverns} />
+              <RRow label="Rupture  →  Fu·U·Ag / 2.00"
+                value={fki(R.webTensRupture)}
+                governs={ruptureGoverns}
+                highlight={ruptureGoverns} />
+              <RRow label="Tension capacity Pn/Ωt  (min)"
+                value={fki(R.webTensCap)}
+                ok={R.webTensOK}
+                na={!R.shearReqd} />
+              <RRow label="Weld capacity  0.6·60·0.707·a·L·2"
+                value={fki(R.weldCapacity)}
+                ok={R.weldTensOK}
+                na={!R.shearReqd} />
+
+              <hr style={sR.divider} />
+              <div style={sR.rSubHead(TR.amber)}>Compression check</div>
+              <RRow label="Member length"          value={fin(R.memberLen)} />
+              <RRow label="rx"                     value={f(R.rx, 4) + " in"} />
+              <RRow label="KL/r"                   value={f(R.KLr, 1)} />
+              <RRow label="Fe"                     value={fks(R.Fe)} />
+              <RRow label="Fcr"                    value={fks(R.Fcr)} />
+              <RRow label="Comp. capacity Pn/Ωc"   value={fki(R.webCompCap)}   ok={R.webCompOK}  na={!R.shearReqd} />
+              <RRow label="Weld capacity (comp.)"  value={fki(R.weldCapacity)} ok={R.weldCompOK} na={!R.shearReqd} />
+            </div>
+          </div>
+        </div>
+
+        {/* ── MODULE 3: CHORD REINFORCING (MOMENT) ── */}
+        <div style={sR.module}>
+          <ModuleHead color={TR.red} editBtn={<EditBtn locked={chordLocked} onToggle={() => setChordLocked(l => !l)} />}>
+            Chord reinforcing — moment check
+          </ModuleHead>
+
+          {/* Inputs */}
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${TR.border}` }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+              <F label="Rod size (2T&amp;B ea. side)"><RS value={inp.chordDia} onChange={set("chordDia")} /></F>
+              <F label="F_y (ksi)">{chordLocked ? <LI value={inp.chordFy} /> : <NI value={inp.chordFy} onChange={set("chordFy")} step={1} />}</F>
+              <F label="F_u (ksi)">{chordLocked ? <LI value={inp.chordFu} /> : <NI value={inp.chordFu} onChange={set("chordFu")} step={1} />}</F>
+              <F label="Shear lag U">{chordLocked ? <LI value={inp.chordU} /> : <NI value={inp.chordU} onChange={set("chordU")} step={0.025} />}</F>
+              <F label="E (ksi)">{chordLocked ? <LI value={inp.chordE} /> : <NI value={inp.chordE} onChange={set("chordE")} step={1000} />}</F>
+              <F label="Weld spacing (in)" note="Used as KL for compression">
+                {chordLocked ? <LI value={inp.chordWeldSpacing} /> : <NI value={inp.chordWeldSpacing} onChange={set("chordWeldSpacing")} step={1} />}
+              </F>
+            </div>
+          </div>
+
+          {/* Results — full-width */}
+          <div style={sR.moduleRight}>
+              <MPair
+                a={{ label: "Add'l moment ΔM",  value: R.momentReqd ? f(R.dM, 3) + " k·ft" : "0.000 k·ft", sub: R.momentReqd ? "" : "no chord reinf. req'd" }}
+                b={{ label: "Add'l chord force", value: R.momentReqd ? fki(Math.abs(R.dP)) : "—" }}
+              />
+
+              <div style={sR.rSubHead(TR.red)}>Tension check</div>
+              <RRow label="Ag per chord (2 rods)"           value={fi2(R.chordAg)} />
+              <RRow label="rx"                              value={f(R.chordRxVal, 4) + " in"} />
+              <RRow label="Yield  →  Fy·Ag / 1.67"
+                value={fki(R.chordTensYield)}
+                governs={chYieldGoverns}
+                highlight={chYieldGoverns} />
+              <RRow label="Rupture  →  Fu·U·Ag / 2.00"
+                value={fki(R.chordTensRupture)}
+                governs={chRuptureGoverns}
+                highlight={chRuptureGoverns} />
+              <RRow label="Tension capacity Pn/Ωt  (min)"
+                value={fki(R.chordTensCap)}
+                ok={R.chordTensOK}
+                na={!R.momentReqd} />
+
+              <hr style={sR.divider} />
+              <div style={sR.rSubHead(TR.red)}>Compression check</div>
+              <RRow label="KL/r"                            value={f(R.chordKLr, 1)} />
+              <RRow label="Fe"                              value={fks(R.chordFe)} />
+              <RRow label="Fcr"                             value={fks(R.chordFcr)} />
+              <RRow label="Compression capacity Pn/Ωc"     value={fki(R.chordCompCap)} ok={R.chordCompOK} na={!R.momentReqd} />
+            </div>
+          {/* end chord module */}
+        </div>
+
+        {/* ── MODULE 4: DEFLECTION ── */}
+        <div style={sR.module}>
+          <ModuleHead color={TR.teal}>Deflection — total load</ModuleHead>
+          <div style={sR.moduleBody}>
+
+            {/* Inputs */}
+            <div style={sR.moduleLeft}>
+              <div style={sR.fRow}>
+                <F label="I_unreinf (in⁴)" note="From Tab 1 joist analysis">
+                  <LI value={typeof inp.Iunreinf === 'number' ? inp.Iunreinf.toFixed(3) : '0.000'} />
+                </F>
+                <F label="Defl. limit L/">
+                  <NI value={inp.deflLimit} onChange={set("deflLimit")} step={10} min={1} />
+                </F>
+              </div>
+              <div style={sR.fRowFull}>
+                <F label="Defl_unreinf (in)" note="From Tab 2 joist analysis (total load)">
+                  <LI value={typeof inp.deflUnreinf === 'number' ? inp.deflUnreinf.toFixed(3) : '0.000'} />
+                </F>
+              </div>
+            </div>
+
+            {/* Results */}
+            <div style={sR.moduleRight}>
+              <MPair
+                a={{ label: "Unreinforced", value: fin(inp.deflUnreinf), sub: "L/" + R.LoverDeflU }}
+                b={{ label: "Reinforced",   value: fin(R.deflReinf),     sub: "L/" + R.LoverDeflR }}
+              />
+              <div style={sR.rSubHead(TR.teal)}>Moment of inertia</div>
+              <RRow label="I_unreinf"                        value={f(inp.Iunreinf, 3) + " in⁴"} />
+              <RRow label="I_added  (chord rods, top+bot)"   value={f(R.Iadded, 3) + " in⁴"} />
+              <RRow label="I_reinf  = I_unreinf + I_added"   value={f(R.Ireinf, 3) + " in⁴"} />
+              <hr style={sR.divider} />
+              <RRow
+                label={"Allowable  (L/" + inp.deflLimit + ")"}
+                value={fin(R.deflAllowable)}
+                ok={R.deflOK}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Summary banner */}
+        <div style={R.allOK ? sR.bannerOK : sR.bannerNG}>
+          {R.allOK
+            ? "✓  All checks pass — reinforcing scheme is adequate."
+            : "✗  One or more checks fail — revise rod size, weld geometry, or reinforcing scheme."}
+        </div>
+
+        <p style={sR.footer}>
+          AISC 360-05 ASD · Ω_t = 1.67 (yield) / 2.00 (rupture) · Ω_c = 1.67 ·
+          Tension capacity = min(F′y·Ag/1.67, Fu·U·Ag/2.00) · "governs" tag marks controlling term ·
+          Web compression: circular rod, no angle slenderness correction ·
+          Weld: 0.6 · 60ksi (E70 electrode) × 0.707 × a × L × 2 ·
+          I_reinf must include chord rod contribution (parallel-axis from rod centroid to joist N.A.)
+        </p>
+    </div>
+  );
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// REINFORCEMENT SCHEDULE TABLE
+// ═══════════════════════════════════════════════════════════════════════
+function ReinfScheduleTable({ schedule, chordDia, webDia }) {
+  const { chord, web, span: L } = schedule;
+
+  const fmt05 = (v) => {
+    if (v === null || v === undefined) return "—";
+    const ft = Math.floor(v);
+    const half = v % 1 !== 0 ? "½\"" : "0\"";
+    return ft + "\u2032-" + half;
+  };
+
+  const T2 = {
+    bg1: "#0f1319", bg2: "#141920", bg3: "#1a2030",
+    borderHi: "#2a3550", text0: "#e8edf5", text1: "#8896b0", text2: "#3d4d68",
+    teal: "#3de8b0", amber: "#f5a742", red: "#f56060",
+    mono: "'IBM Plex Mono','Courier New',monospace",
+  };
+
+  const cellStyle = (highlight) => ({
+    border: "1px solid " + T2.borderHi,
+    padding: "10px 14px",
+    textAlign: "center",
+    fontFamily: T2.mono,
+    fontSize: 13,
+    fontWeight: 600,
+    color: highlight ? T2.teal : T2.text0,
+    background: highlight ? "rgba(61,232,176,0.04)" : T2.bg2,
+    whiteSpace: "nowrap",
+  });
+
+  const headCell = (color) => ({
+    border: "1px solid " + T2.borderHi,
+    padding: "7px 14px",
+    textAlign: "center",
+    fontFamily: T2.mono,
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: color || T2.text1,
+    background: T2.bg3,
+  });
+
+  const groupHead = (color) => ({
+    border: "1px solid " + T2.borderHi,
+    padding: "8px 14px",
+    textAlign: "center",
+    fontFamily: T2.mono,
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    color: color || T2.text1,
+    background: T2.bg1,
+  });
+
+  const rodLabel = (dia) => {
+    const map = { 0.25: "\u00bc\"", 0.375: "\u215c\"", 0.5: "\u00bd\"", 0.625: "\u215d\"", 0.75: "\u00be\"" };
+    return (map[dia] || dia + "\"") + " DIA. ROD";
+  };
+
+  return (
+    <div style={{ padding: "0 28px 40px", maxWidth: 960, margin: "0 auto" }}>
+      <div style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.18em", color: T2.teal,
+        textTransform: "uppercase", marginBottom: 12,
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: T2.teal, display: "inline-block", flexShrink: 0 }} />
+        Joist Reinforcement Schedule
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620 }}>
+          <thead>
+            <tr>
+              <td rowSpan={2} style={{ ...groupHead(T2.red), verticalAlign: "middle", lineHeight: 1.5 }}>
+                Chord<br />Reinf.
+              </td>
+              <td colSpan={3} style={groupHead(T2.red)}>Chord Reinf.</td>
+              <td rowSpan={2} style={{ ...groupHead(T2.amber), verticalAlign: "middle", lineHeight: 1.5 }}>
+                Web<br />Reinf.
+              </td>
+              <td colSpan={3} style={groupHead(T2.amber)}>Web Reinf.</td>
+              <td rowSpan={2} style={{ ...groupHead(T2.text1), verticalAlign: "middle" }}>Span</td>
+            </tr>
+            <tr>
+              <td style={headCell(T2.red)}>&ldquo;A&rdquo;</td>
+              <td style={headCell(T2.red)}>&ldquo;B&rdquo;</td>
+              <td style={headCell(T2.red)}>&ldquo;C&rdquo;</td>
+              <td style={headCell(T2.amber)}>&ldquo;D&rdquo;</td>
+              <td style={headCell(T2.amber)}>&ldquo;E&rdquo;</td>
+              <td style={headCell(T2.amber)}>&ldquo;F&rdquo;</td>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ ...cellStyle(false), fontSize: 11, color: T2.text1 }}>{rodLabel(chordDia)}</td>
+              <td style={cellStyle(!!chord)}>{chord ? fmt05(chord.A) : "N/A"}</td>
+              <td style={cellStyle(!!chord)}>{chord ? fmt05(chord.B) : "N/A"}</td>
+              <td style={cellStyle(!!chord)}>{chord ? fmt05(chord.C) : "N/A"}</td>
+              <td style={{ ...cellStyle(false), fontSize: 11, color: T2.text1 }}>{rodLabel(webDia)}</td>
+              <td style={cellStyle(!!web)}>{web ? fmt05(web.D) : "N/A"}</td>
+              <td style={cellStyle(!!web)}>{web ? fmt05(web.E) : "N/A"}</td>
+              <td style={cellStyle(!!web)}>{web ? fmt05(web.F) : "N/A"}</td>
+              <td style={cellStyle(false)}>{"±"}{fmt05(Math.ceil(L * 2) / 2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 9, color: T2.text2, fontFamily: T2.mono, lineHeight: 1.8 }}>
+        A = distance from support to start of chord reinf. zone &#183; B = length of chord reinf. zone &#183;
+        C = distance from end of chord reinf. zone to far support &#183;
+        D = distance from support to end of web reinf. zone (near) &#183;
+        E = unaffected panel length between zones &#183; F = distance from start of web reinf. zone (far) to support &#183;
+        All values rounded up to nearest 0&prime;-6&quot;
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════
@@ -718,6 +1652,8 @@ export default function BarJoistCalculator() {
   const defaultLiveLoad = joistRecord ? joistRecord.live_load_l360_plf : 0;
   const defaultDeadLoad = joistRecord ? joistRecord.total_load_plf - joistRecord.live_load_l360_plf : 0;
   const spanNum = parseFloat(span) || 0;
+  // Parse depth from joist designation (e.g. "26K7" → 26 in)
+  const joistDepthIn = joistId ? parseInt(joistId.split("K")[0]) || 0 : 0;
   const defaultE = 29000;
 
   const [liveLoad, setLiveLoad] = useState(0);
@@ -991,16 +1927,16 @@ export default function BarJoistCalculator() {
     if (!tab1Results || !tab2Results) return null;
     const env = capacityEnvelope;
 
-    // Compute max deviation % along the span, returning worst-point values
+    // Compute max deviation along the span, returning worst-point values
     const computeMaxDeviation = (demandArr, capArr, demandX, capX) => {
       let maxPct = 0;
+      let maxDev = 0;
       let worstDemand = 0;
       let worstCap = 0;
       const step = Math.max(1, Math.floor(demandArr.length / 500));
       for (let i = 0; i < demandArr.length; i += step) {
         const xi = demandX[i];
         const dVal = Math.abs(demandArr[i]);
-        // Interpolate capacity at xi
         let cVal = 0;
         const idx = capX.findIndex(cx => cx >= xi);
         if (idx <= 0) cVal = Math.abs(capArr[0] || 0);
@@ -1010,14 +1946,16 @@ export default function BarJoistCalculator() {
         }
         if (cVal > 0 && dVal > cVal) {
           const pct = ((dVal - cVal) / cVal) * 100;
-          if (pct > maxPct) {
+          const dev = dVal - cVal;
+          if (dev > maxDev) {
             maxPct = pct;
+            maxDev = dev;
             worstDemand = dVal;
             worstCap = cVal;
           }
         }
       }
-      return { maxPct, worstDemand, worstCap };
+      return { maxPct, maxDev, worstDemand, worstCap };
     };
 
     // Use envelope for moment and shear, actual analysis for deflection
@@ -1034,12 +1972,102 @@ export default function BarJoistCalculator() {
     const dPass = dDev.maxPct < 0.1;
 
     return {
-      moment: { cap: env ? env.maxM : tab1Results.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
-      shear: { cap: env ? env.maxV : tab1Results.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
-      deflection: { cap: tab1Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass, devPct: dDev.maxPct, worstDemand: dDev.worstDemand, worstCap: dDev.worstCap },
+      moment: { cap: env ? env.maxM : tab1Results.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, maxDev: mDev.maxDev, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
+      shear: { cap: env ? env.maxV : tab1Results.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, maxDev: vDev.maxDev, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
+      deflection: { cap: tab1Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass, devPct: dDev.maxPct, maxDev: dDev.maxDev, worstDemand: dDev.worstDemand, worstCap: dDev.worstCap },
       overall: mPass && vPass && dPass,
     };
   }, [tab1Results, tab2Results, capacityEnvelope]);
+
+  // Values piped into Tab 3 (Reinforcement Check)
+  const reinfProps = {
+    span:        spanNum,
+    depth:       joistDepthIn,
+    RE:          comparison && !comparison.shear.pass   ? Math.round(comparison.shear.maxDev)   / 1000 : 0,
+    dM:          comparison && !comparison.moment.pass  ? Math.round(comparison.moment.maxDev)  / 1000 : 0,
+    Iunreinf:    Ival,
+    deflUnreinf: tab2Results ? tab2Results.maxDefl : 0,
+  };
+
+  // ─── Reinforcement Schedule (drives the table at bottom of Tab 3) ───
+  const reinfSchedule = useMemo(() => {
+    if (!tab2Results || !capacityEnvelope || !spanNum) return null;
+
+    // Round up to nearest 0.5 ft
+    const ceil05 = (v) => Math.ceil(v * 2) / 2;
+
+    // Generic zone finder — same logic as Diagram component
+    const findZones = (demandArr, demandX, capArr, capX) => {
+      const getCapAt = (xi) => {
+        const idx = capX.findIndex(ox => ox >= xi);
+        if (idx <= 0) return Math.abs(capArr[0] || 0);
+        const t = (xi - capX[idx-1]) / (capX[idx] - capX[idx-1] || 1);
+        return Math.abs(capArr[idx-1] + t * (capArr[idx] - capArr[idx-1]));
+      };
+      const zones = [];
+      let inExceed = false, exceedStart = 0, zoneMaxDev = 0;
+      const step = Math.max(1, Math.floor(demandArr.length / 500));
+      for (let i = 0; i <= demandArr.length; i += (i < demandArr.length ? step : 0)) {
+        if (i >= demandArr.length) i = demandArr.length - 1;
+        const xi = demandX[i];
+        const demandVal = Math.abs(demandArr[i]);
+        const capVal = getCapAt(xi);
+        const exceeds = demandVal > capVal * 1.001;
+        const dev = demandVal - capVal;
+        if (exceeds && !inExceed) { exceedStart = xi; zoneMaxDev = dev; inExceed = true; }
+        else if (exceeds && inExceed) { zoneMaxDev = Math.max(zoneMaxDev, dev); }
+        else if (!exceeds && inExceed) { zones.push({ start: exceedStart, end: xi }); inExceed = false; }
+        if (i === demandArr.length - 1) { if (inExceed) zones.push({ start: exceedStart, end: xi }); break; }
+      }
+      return zones;
+    };
+
+    // Moment zones (chord reinf) — demand vs moment envelope
+    const mZones = findZones(tab2Results.M, tab2Results.x, capacityEnvelope.M, capacityEnvelope.x);
+    // Shear zones (web reinf) — demand vs shear envelope (use abs values)
+    const vZones = findZones(tab2Results.V, tab2Results.x, capacityEnvelope.V, capacityEnvelope.x);
+
+    const L = spanNum;
+
+    // Chord: expect one zone (symmetric moment hump)
+    // A = zone start rounded up, B = zone length rounded up, C = span - zone end rounded up
+    let chord = null;
+    if (mZones.length > 0) {
+      const z = mZones[0];
+      const A = ceil05(z.start);
+      const B = ceil05(z.end - z.start);
+      const C = ceil05(L - z.end);
+      chord = { A, B, C };
+    }
+
+    // Web: expect two symmetric zones (one near each support)
+    let web = null;
+    if (vZones.length >= 2) {
+      const z1 = vZones[0];
+      const z2 = vZones[vZones.length - 1];
+      const D = ceil05(z1.end);
+      const E = ceil05(z2.start - z1.end);
+      const F = ceil05(L - z2.start);
+      web = { D, E, F };
+    } else if (vZones.length === 1) {
+      // Single zone near one end — partial case
+      const z = vZones[0];
+      const D = ceil05(z.end);
+      const E = null;
+      const F = ceil05(L - z.end);
+      web = { D, E, F };
+    }
+
+    return { chord, web, span: L };
+  }, [tab2Results, capacityEnvelope, spanNum]);
+
+  // ─── Tab 3 lifted state (persists across tab switches) ───
+  const [reinfInp, setReinfInp] = useState({
+    ...DEFAULTS,
+    span: 0, depth: 0, RE: 0, dM: 0, Iunreinf: 0, deflUnreinf: 0,
+  });
+  const [reinfWebLocked, setReinfWebLocked]     = useState(true);
+  const [reinfChordLocked, setReinfChordLocked] = useState(true);
 
   // ─── Styles ───
   const s = {
@@ -1146,6 +2174,8 @@ export default function BarJoistCalculator() {
 
   return (
     <div style={s.app}>
+      <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+
       {/* Hidden file input for Open */}
       <input
         ref={fileInputRef}
@@ -1212,6 +2242,7 @@ export default function BarJoistCalculator() {
       <div style={s.tabBar}>
         <button style={s.tab(activeTab === "tab1")} onClick={() => setActiveTab("tab1")}>① Existing Joist Capacity</button>
         <button style={s.tab(activeTab === "tab2")} onClick={() => setActiveTab("tab2")}>② Joist With Additional Load</button>
+        <button style={s.tab(activeTab === "tab3")} onClick={() => setActiveTab("tab3")}>③ Bar Joist Reinforcement</button>
       </div>
 
       {/* ═══════════ TAB 1 ═══════════ */}
@@ -1636,7 +2667,7 @@ export default function BarJoistCalculator() {
                             {displayCap > 0 ? fmt(displayDem / displayCap * 100, 1) + "%" : "—"}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "'JetBrains Mono', monospace", color: !row.pass ? "#ef4444" : "#10b981", fontWeight: !row.pass ? 700 : 400 }}>
-                            {row.pass ? "—" : "+" + fmt(row.devPct, 1) + "%"}
+                            {row.pass ? "—" : "+" + (row.isDefl ? fmt(row.maxDev, 3) + " in" : fmt(row.maxDev, 0) + (row.name.includes("Moment") ? " lb·ft" : " lb"))}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "center" }}>
                             <span style={{ ...s.badge(row.pass), fontSize: 11, padding: "2px 10px" }}>
@@ -1654,6 +2685,41 @@ export default function BarJoistCalculator() {
           )}
         </div>
       )}
+
+      {/* ═══════════ TAB 3 — always mounted, hidden when inactive ═══════════ */}
+      <div style={{ display: activeTab === "tab3" ? "block" : "none", background: "#0a0d13", minHeight: "calc(100vh - 100px)" }}>
+        {!joistRecord ? (
+          <div style={s.panel}>
+            <div style={{ ...s.card, borderColor: "#f59e0b", color: "#fcd34d" }}>
+              Please select a joist and span in Tab 1, and enter additional loads in Tab 2, before running the reinforcement check.
+            </div>
+          </div>
+        ) : (
+          <OWSJReinforcementCalc
+            span={reinfProps.span}
+            depth={reinfProps.depth}
+            RE={reinfProps.RE}
+            dM={reinfProps.dM}
+            Iunreinf={reinfProps.Iunreinf}
+            deflUnreinf={reinfProps.deflUnreinf}
+            inp={reinfInp}
+            setInp={setReinfInp}
+            webLocked={reinfWebLocked}
+            setWebLocked={setReinfWebLocked}
+            chordLocked={reinfChordLocked}
+            setChordLocked={setReinfChordLocked}
+          />
+
+          {/* ── JOIST REINFORCEMENT SCHEDULE TABLE ── */}
+          {reinfSchedule && (reinfSchedule.chord || reinfSchedule.web) && (
+            <ReinfScheduleTable
+              schedule={reinfSchedule}
+              chordDia={reinfInp.chordDia}
+              webDia={reinfInp.webDia}
+            />
+          )}
+        )}
+      </div>
     </div>
   );
 }
