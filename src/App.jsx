@@ -2063,9 +2063,10 @@ export default function BarJoistCalculator() {
   // Round up to nearest 0.5 ft, format as ft-in string
   const roundUp05 = (v) => Math.ceil(v * 2) / 2;
   const fmtFtIn = (v) => {
-    const r = roundUp05(v);
-    const ft = Math.floor(r);
-    const inches = Math.round((r - ft) * 12);
+    // v may not be a round 0.5 increment (remainder segments) — just format as-is
+    const ft = Math.floor(v);
+    const inches = Math.round((v - ft) * 12);
+    if (inches === 12) return `${ft + 1}'-0"`;
     return inches === 0 ? `${ft}'-0"` : `${ft}'-${inches}"`;
   };
 
@@ -2074,49 +2075,36 @@ export default function BarJoistCalculator() {
     const span = spanNum;
 
     // Moment zones → A, B, C
+    // Strategy: round A and B up to nearest 0.5; C = span − A − B (exact remainder, no rounding)
+    // This guarantees A + B + C = span exactly.
     const mZones = getExceedanceZones(tab2Results.M, tab2Results.x, capacityEnvelope.M, capacityEnvelope.x);
     let momentSchedule = null;
     if (mZones.length > 0) {
-      // Use the union of all moment exceedance zones (merge into single envelope)
       const zStart = Math.min(...mZones.map(z => z.start));
       const zEnd   = Math.max(...mZones.map(z => z.end));
-      momentSchedule = {
-        A: fmtFtIn(zStart),
-        B: fmtFtIn(zEnd - zStart),
-        C: fmtFtIn(span - zEnd),
-        Araw: roundUp05(zStart),
-        Braw: roundUp05(zEnd - zStart),
-        Craw: roundUp05(span - zEnd),
-      };
+      const A = roundUp05(zStart);
+      const B = roundUp05(zEnd - zStart);
+      const C = span - A - B;           // exact remainder — always sums to span
+      momentSchedule = { A: fmtFtIn(A), B: fmtFtIn(B), C: fmtFtIn(C) };
     }
 
-    // Shear zones → D, E, F  (expect two zones: one near each end)
+    // Shear zones → D, E, F
+    // Strategy: round D and F up to nearest 0.5; E = span − D − F (exact remainder)
     const vZones = getExceedanceZones(tab2Results.V, tab2Results.x, capacityEnvelope.V, capacityEnvelope.x);
     let shearSchedule = null;
     if (vZones.length >= 2) {
-      // Sort by start position
       const sorted = [...vZones].sort((a, b) => a.start - b.start);
-      const z1 = sorted[0]; // near left end
-      const z2 = sorted[sorted.length - 1]; // near right end
-      shearSchedule = {
-        D: fmtFtIn(z1.end),
-        E: fmtFtIn(z2.start - z1.end),
-        F: fmtFtIn(span - z2.start),
-        Draw: roundUp05(z1.end),
-        Eraw: roundUp05(z2.start - z1.end),
-        Fraw: roundUp05(span - z2.start),
-      };
+      const z1 = sorted[0];
+      const z2 = sorted[sorted.length - 1];
+      const D = roundUp05(z1.end);
+      const F = roundUp05(span - z2.start);
+      const E = span - D - F;           // exact remainder
+      shearSchedule = { D: fmtFtIn(D), E: fmtFtIn(E), F: fmtFtIn(F) };
     } else if (vZones.length === 1) {
-      // Only one zone (asymmetric loading) — put in D
       const z1 = vZones[0];
-      shearSchedule = {
-        D: fmtFtIn(z1.end),
-        E: '—',
-        F: fmtFtIn(span - z1.end),
-        Draw: roundUp05(z1.end),
-        Eraw: null,
-        Fraw: roundUp05(span - z1.end),
-      };
+      const D = roundUp05(z1.end);
+      const F = span - D;               // exact remainder
+      shearSchedule = { D: fmtFtIn(D), E: '—', F: fmtFtIn(F) };
     }
 
     return { momentSchedule, shearSchedule, span: fmtFtIn(span) };
