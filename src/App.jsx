@@ -818,85 +818,85 @@ function computeResults(inputs) {
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const TR = {
-  bg0: "#0a0d13",
-  bg1: "#0f1319",
-  bg2: "#141920",
-  bg3: "#1a2030",
-  border: "#1e2638",
-  borderHi: "#2a3550",
-  text0: "#e8edf5",
-  text1: "#8896b0",
-  text2: "#3d4d68",
-  blue: "#4d9fff",
-  teal: "#3de8b0",
-  amber: "#f5a742",
-  red: "#f56060",
-  green: "#4dcc8a",
-  purple: "#b07fff",
-  mono: "'IBM Plex Mono', 'Courier New', monospace",
+  bg0: "#0f172a",
+  bg1: "#1e293b",
+  bg2: "#273449",
+  bg3: "#334155",
+  border: "#334155",
+  borderHi: "#475569",
+  text0: "#e2e8f0",
+  text1: "#94a3b8",
+  text2: "#64748b",
+  blue: "#38bdf8",
+  teal: "#38bdf8",
+  amber: "#f59e0b",
+  red: "#ef4444",
+  green: "#10b981",
+  purple: "#a78bfa",
+  mono: "'JetBrains Mono', 'IBM Plex Mono', monospace",
 };
 
 const sR = {
-  page:        { fontFamily: TR.mono, background: TR.bg0, minHeight: "100vh", color: TR.text0 },
+  page:        { fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", background: TR.bg0, minHeight: "100vh", color: TR.text0 },
   header:      { background: TR.bg1, borderBottom: `1px solid ${TR.border}`, padding: "18px 28px 14px", position: "sticky", top: 0, zIndex: 10 },
   hTitle:      { fontSize: 11, fontWeight: 700, letterSpacing: "0.18em", color: TR.teal, textTransform: "uppercase", margin: 0 },
   hSub:        { fontSize: 10, color: TR.text2, letterSpacing: "0.08em", marginTop: 3 },
-  main:        { padding: "22px 28px 40px", maxWidth: 960, margin: "0 auto" },
+  main:        { padding: "20px 24px 40px", maxWidth: 960, margin: "0 auto" },
 
   // Demand row — full width at top
-  demandBox:   { background: TR.bg2, border: `1px solid ${TR.amber}44`, borderRadius: 6, padding: "16px 20px", marginBottom: 20 },
-  demandTitle: { fontSize: 9, fontWeight: 700, letterSpacing: "0.16em", color: TR.amber, textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 7 },
+  demandBox:   { background: TR.bg1, border: `1px solid ${TR.amber}66`, borderRadius: 10, padding: "16px", marginBottom: 16 },
+  demandTitle: { fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", color: TR.amber, textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 7 },
   demandDot:   { width: 6, height: 6, borderRadius: "50%", background: TR.amber, flexShrink: 0 },
-  demandNote:  { fontSize: 9, color: TR.text2, marginTop: 8, lineHeight: 1.7, borderTop: `1px solid ${TR.border}`, paddingTop: 8 },
-  demandRow:   { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
+  demandNote:  { fontSize: 11, color: TR.text2, marginTop: 8, lineHeight: 1.7, borderTop: `1px solid ${TR.border}`, paddingTop: 8 },
+  demandRow:   { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
 
   // Module = full-width card with inputs on left, results panel on right
-  module:      { background: TR.bg1, border: `1px solid ${TR.border}`, borderRadius: 8, marginBottom: 16, overflow: "hidden" },
-  moduleHead:  (c) => ({ background: TR.bg2, borderBottom: `1px solid ${TR.border}`, padding: "10px 18px", display: "flex", alignItems: "center", gap: 8, fontSize: 9, fontWeight: 700, letterSpacing: "0.16em", color: c, textTransform: "uppercase" }),
+  module:      { background: TR.bg1, border: `1px solid ${TR.border}`, borderRadius: 10, marginBottom: 16, overflow: "hidden" },
+  moduleHead:  (c) => ({ background: TR.bg2, borderBottom: `1px solid ${TR.border}`, padding: "10px 16px", display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", color: c, textTransform: "uppercase" }),
   moduleDot:   (c) => ({ width: 6, height: 6, borderRadius: "50%", background: c, flexShrink: 0 }),
   moduleBody:  { display: "grid", gridTemplateColumns: "320px 1fr", minHeight: 0 },
-  moduleLeft:  { padding: "16px 18px", borderRight: `1px solid ${TR.border}` },
+  moduleLeft:  { padding: "16px", borderRight: `1px solid ${TR.border}` },
   moduleRight: { padding: 0 },
 
   // Input fields
-  fRow:        { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 },
-  fRow3:       { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 },
+  fRow:        { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 },
+  fRow3:       { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 10 },
   fRowFull:    { marginBottom: 10 },
   field:       { display: "flex", flexDirection: "column", gap: 3 },
-  flabel:      { fontSize: 9, color: TR.text2, letterSpacing: "0.09em", textTransform: "uppercase" },
-  fnote:       { fontSize: 9, color: TR.text2, lineHeight: 1.4, marginTop: 1 },
-  input:       { background: TR.bg0, border: `1px solid ${TR.border}`, borderRadius: 3, color: TR.text0, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono, outline: "none", width: "100%", boxSizing: "border-box" },
-  select:      { background: TR.bg0, border: `1px solid ${TR.border}`, borderRadius: 3, color: TR.text0, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono, outline: "none", cursor: "pointer", width: "100%", boxSizing: "border-box" },
+  flabel:      { fontSize: 11, color: TR.text1, fontWeight: 500 },
+  fnote:       { fontSize: 10, color: TR.text2, lineHeight: 1.4, marginTop: 1 },
+  input:       { background: TR.bg1, border: `1px solid ${TR.border}`, borderRadius: 6, color: "#f1f5f9", fontSize: 13, padding: "6px 8px", fontFamily: TR.mono, outline: "none", width: "100%", boxSizing: "border-box" },
+  select:      { background: TR.bg1, border: `1px solid ${TR.border}`, borderRadius: 6, color: "#f1f5f9", fontSize: 13, padding: "6px 8px", fontFamily: TR.mono, outline: "none", cursor: "pointer", width: "100%", boxSizing: "border-box" },
 
   // Results within module
-  rSubHead:    (c) => ({ padding: "7px 14px 3px", fontSize: 9, color: c || TR.text2, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600, borderBottom: `1px solid ${TR.border}` }),
-  rRow:        { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 14px", borderBottom: `1px solid ${TR.bg0}`, fontSize: 11 },
-  rRowHL:      { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 14px", borderBottom: `1px solid ${TR.bg0}`, fontSize: 11, background: "#141920" },
+  rSubHead:    (c) => ({ padding: "7px 14px 5px", fontSize: 11, color: c || TR.text1, letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 700, borderBottom: `1px solid ${TR.border}` }),
+  rRow:        { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 14px", borderBottom: `1px solid ${TR.bg3}`, fontSize: 13 },
+  rRowHL:      { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 14px", borderBottom: `1px solid ${TR.bg3}`, fontSize: 13, background: TR.bg2 },
   rLabel:      { color: TR.text1 },
-  rVal:        { color: TR.text0, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 },
-  rNote:       { fontSize: 9, color: TR.text2, marginTop: 1 },
+  rVal:        { color: TR.text0, fontWeight: 600, fontFamily: TR.mono, display: "flex", alignItems: "center", gap: 8 },
+  rNote:       { fontSize: 10, color: TR.text2, marginTop: 1 },
   mGrid:       { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, borderBottom: `1px solid ${TR.border}` },
   mCell:       { background: TR.bg2, padding: "10px 14px" },
-  mLabel:      { fontSize: 9, color: TR.text2, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 },
-  mVal:        { fontSize: 15, fontWeight: 600, color: TR.text0 },
-  mSub:        { fontSize: 10, color: TR.text1, marginTop: 1 },
+  mLabel:      { fontSize: 10, color: TR.text2, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 3 },
+  mVal:        { fontSize: 16, fontWeight: 700, color: TR.text0, fontFamily: TR.mono },
+  mSub:        { fontSize: 11, color: TR.text1, marginTop: 2 },
   divider:     { border: "none", borderTop: `1px solid ${TR.border}`, margin: "2px 0" },
 
   badge:       (ok, na) => ({
-    fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 2, letterSpacing: "0.1em",
-    background: na ? TR.bg3 : ok ? "rgba(61,232,176,0.1)" : "rgba(245,96,96,0.1)",
-    color:      na ? TR.text2 : ok ? TR.teal : TR.red,
-    border:     `1px solid ${na ? TR.border : ok ? "rgba(61,232,176,0.25)" : "rgba(245,96,96,0.25)"}`,
+    fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, letterSpacing: "0.04em",
+    background: na ? TR.bg3 : ok ? "#065f46" : "#7f1d1d",
+    color:      na ? TR.text2 : ok ? "#6ee7b7" : "#fca5a5",
+    border:     `1px solid ${na ? TR.border : ok ? "#10b981" : "#ef4444"}`,
   }),
-  govBadge:    { fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 2, letterSpacing: "0.1em", background: "rgba(176,127,255,0.12)", color: TR.purple, border: "1px solid rgba(176,127,255,0.25)" },
+  govBadge:    { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, letterSpacing: "0.04em", background: "rgba(167,139,250,0.12)", color: TR.purple, border: "1px solid rgba(167,139,250,0.35)" },
 
   // Run button
   btnWrap:     { marginTop: 16 },
-  btn:         (hov) => ({ width: "100%", padding: "10px 0", background: hov ? "rgba(77,159,255,0.08)" : "transparent", border: `1px solid ${hov ? TR.blue : TR.borderHi}`, borderRadius: 4, color: TR.blue, fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", cursor: "pointer", fontFamily: TR.mono, transition: "all 0.15s" }),
+  btn:         (hov) => ({ width: "100%", padding: "10px 0", background: hov ? "rgba(56,189,248,0.08)" : "transparent", border: `1px solid ${hov ? TR.blue : TR.borderHi}`, borderRadius: 6, color: TR.blue, fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", cursor: "pointer", fontFamily: "'IBM Plex Sans', sans-serif", transition: "all 0.15s" }),
 
-  bannerOK:    { background: "rgba(61,232,176,0.06)", border: `1px solid rgba(61,232,176,0.25)`, borderRadius: 5, padding: "12px 18px", fontSize: 11, color: TR.teal, marginTop: 4, letterSpacing: "0.04em" },
-  bannerNG:    { background: "rgba(245,96,96,0.06)",  border: `1px solid rgba(245,96,96,0.25)`,  borderRadius: 5, padding: "12px 18px", fontSize: 11, color: TR.red,  marginTop: 4, letterSpacing: "0.04em" },
-  footer:      { fontSize: 9, color: TR.text2, marginTop: 20, lineHeight: 1.8 },
+  bannerOK:    { background: "#065f46", border: "1px solid #10b981", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#6ee7b7", marginTop: 4, fontWeight: 700 },
+  bannerNG:    { background: "#7f1d1d", border: "1px solid #ef4444", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#fca5a5", marginTop: 4, fontWeight: 700 },
+  footer:      { fontSize: 10, color: TR.text2, marginTop: 20, lineHeight: 1.8 },
 };
 
 // ─── Small components ─────────────────────────────────────────────────────────
@@ -929,8 +929,8 @@ function RS({ value, onChange }) {
 function LI({ value }) {
   return (
     <div style={{
-      background: TR.bg3, border: `1px solid ${TR.border}`, borderRadius: 3,
-      color: TR.text1, fontSize: 11, padding: "5px 9px", fontFamily: TR.mono,
+      background: TR.bg0, border: `1px solid ${TR.border}`, borderRadius: 6,
+      color: TR.text1, fontSize: 13, padding: "6px 8px", fontFamily: TR.mono,
       minHeight: 28, display: "flex", alignItems: "center",
     }}>{value}</div>
   );
@@ -943,10 +943,10 @@ function EditBtn({ locked, onToggle }) {
       marginLeft: "auto",
       background: "transparent",
       border: `1px solid ${locked ? TR.borderHi : TR.amber}`,
-      borderRadius: 3,
+      borderRadius: 6,
       color: locked ? TR.text2 : TR.amber,
-      fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
-      textTransform: "uppercase", fontFamily: TR.mono,
+      fontSize: 11, fontWeight: 600, letterSpacing: "0.04em",
+      textTransform: "uppercase", fontFamily: "'IBM Plex Sans', sans-serif",
       padding: "2px 10px", cursor: "pointer",
     }}>{locked ? "Edit" : "Lock"}</button>
   );
@@ -1036,8 +1036,8 @@ function WebDiagram({ depth, l1, l2, phi, alpha }) {
   const dashX1 = xMid, dashY1 = yT;
   const dashX2 = xB,   dashY2 = yB;
 
-  const DIM = "#3d4d68";
-  const LBL = "#8896b0";
+  const DIM = "#475569";
+  const LBL = "#94a3b8";
   const ANG = TR.teal;
   const CH  = TR.text0;
   const RE  = TR.amber;
@@ -1979,8 +1979,6 @@ export default function BarJoistCalculator() {
 
   return (
     <div style={s.app}>
-      <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
-
       {/* Hidden file input for Open */}
       <input
         ref={fileInputRef}
@@ -2492,7 +2490,7 @@ export default function BarJoistCalculator() {
       )}
 
       {/* ═══════════ TAB 3 — always mounted, hidden when inactive ═══════════ */}
-      <div style={{ display: activeTab === "tab3" ? "block" : "none", background: "#0a0d13", minHeight: "calc(100vh - 100px)" }}>
+      <div style={{ display: activeTab === "tab3" ? "block" : "none", background: "#0f172a", minHeight: "calc(100vh - 100px)" }}>
         {!joistRecord ? (
           <div style={s.panel}>
             <div style={{ ...s.card, borderColor: "#f59e0b", color: "#fcd34d" }}>
