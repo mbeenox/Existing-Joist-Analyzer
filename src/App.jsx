@@ -703,6 +703,31 @@ const ROD_SIZES = [
   { label: '3/4" ROD',  dia: 0.75  },
 ];
 
+// AISC equal-leg angle properties (single angle, ea. side)
+// A: in², rx: geometric x-axis r.o.g. (in), rz: minor principal axis (in)
+// L2x2 series: AISC 14th Ed. tabulated. Smaller sizes: analytical + fillet correction.
+const ANGLE_SIZES = [
+  { label: 'L2x2x3/8',          A: 1.360, rx: 0.593, rz: 0.370 },
+  { label: 'L2x2x5/16',         A: 1.152, rx: 0.601, rz: 0.377 },
+  { label: 'L2x2x1/4',          A: 0.938, rx: 0.609, rz: 0.384 },
+  { label: 'L2x2x3/16',         A: 0.715, rx: 0.617, rz: 0.391 },
+  { label: 'L2x2x1/8',          A: 0.484, rx: 0.626, rz: 0.398 },
+  { label: 'L1-3/4x1-3/4x1/4',  A: 0.812, rx: 0.529, rz: 0.338 },
+  { label: 'L1-3/4x1-3/4x3/16', A: 0.621, rx: 0.537, rz: 0.334 },
+  { label: 'L1-1/2x1-1/2x1/4',  A: 0.688, rx: 0.449, rz: 0.293 },
+  { label: 'L1-1/2x1-1/2x3/16', A: 0.527, rx: 0.457, rz: 0.288 },
+  { label: 'L1-1/4x1-1/4x1/4',  A: 0.562, rx: 0.369, rz: 0.247 },
+  { label: 'L1-1/4x1-1/4x3/16', A: 0.434, rx: 0.377, rz: 0.242 },
+  { label: 'L1x1x1/8',          A: 0.234, rx: 0.304, rz: 0.192 },
+];
+
+// AISC 360-05 E5: equiv. KL/r for single angle connected through one leg
+// Uses rx (geometric x-axis); capped at 200
+const angleEquivKLr = (memberLen, rx) => {
+  const Lr = memberLen / rx;
+  return Lr <= 80 ? 72 + 0.75 * Lr : Math.min(32 + 1.25 * Lr, 200);
+};
+
 function computeResults(inputs) {
   const {
     span, depth,
@@ -710,6 +735,7 @@ function computeResults(inputs) {
     fp,
     deflLimit, Iunreinf, deflUnreinf,
     l1, l2, braced,
+    webMemberType, webAngleIdx,
     webDia, webFy, webE, webFu, weldSize, weldLen, U,
     chordDia, chordFy, chordFu, chordE, chordWeldSpacing, chordU,
   } = inputs;
@@ -729,8 +755,11 @@ function computeResults(inputs) {
   const TE = shearReqd ? RE / Math.sin(phiRad) : 0;
   const CE = shearReqd ? TE * Math.sin(phiRad) / Math.sin(alphaRad) : 0;
 
-  const webAg     = rodArea(webDia) * 2;   // 2 members, one each side
-  const FyAdj     = webFy - fp;
+  // Member type: rod or angle (2 members, one each side)
+  const useAngle   = webMemberType === 'angle';
+  const angleProps = useAngle ? ANGLE_SIZES[webAngleIdx] : null;
+  const webAg      = useAngle ? angleProps.A * 2 : rodArea(webDia) * 2;
+  const FyAdj      = webFy - fp;
 
   // Tension: Pn/Ωt = min( F'y·Ag / 1.67 ,  Fu·U·Ag / 2.00 )
   const webTensYield   = FyAdj * webAg / OMEGA_T;
@@ -742,9 +771,12 @@ function computeResults(inputs) {
 
   // Compression — end web member
   const memberLen  = (l2 / 2) / Math.cos(alphaRad);
-  const rx         = rodRx(webDia);
-  const KL         = braced ? memberLen / 2 : memberLen;
-  const KLr        = KL / rx;
+  // For rods: rx = d/4, KL per braced flag
+  // For angles: AISC 360-05 E5 equiv. slenderness uses rx (geometric), no K factor needed
+  const rx         = useAngle ? angleProps.rx : rodRx(webDia);
+  const KL         = useAngle ? memberLen : (braced ? memberLen / 2 : memberLen);
+  const KLr        = useAngle ? angleEquivKLr(memberLen, rx) : KL / rx;
+  const LoverRx    = useAngle ? memberLen / rx : null;  // L/rx displayed for angles
   const Fe         = Math.PI * Math.PI * webE / (KLr * KLr);
   const Fcr        = Fe >= 0.44 * webFy
     ? webFy * Math.pow(0.658, webFy / Fe)
@@ -804,7 +836,7 @@ function computeResults(inputs) {
     phi, alpha, TE, CE,
     webAg, FyAdj,
     webTensYield, webTensRupture, webTensCap, weldCapacity,
-    memberLen, rx, KLr, Fe, Fcr, webCompCap,
+    memberLen, rx, KLr, LoverRx, useAngle, Fe, Fcr, webCompCap,
     webTensOK, weldTensOK, webCompOK, weldCompOK,
     dM, dP, momentReqd,
     chordAg, chordRxVal, chordKLr, chordFe, chordFcr,
@@ -1220,8 +1252,9 @@ const DEFAULTS = {
   fp: 0,
   deflLimit: 240, Iunreinf: 125.59, deflUnreinf: 1.613,
   l1: 36, l2: 24, braced: true,
+  webMemberType: 'rod',  webAngleIdx: 0,
   webDia: 0.375, webFy: 36, webE: 29000, webFu: 58,
-  weldSize: 0.125, weldLen: 1.0, U: 0.625,
+  weldSize: 0.125, weldLen: 1.0, U: 0.6,
   chordDia: 0.5, chordFy: 36, chordFu: 58, chordE: 29000, chordWeldSpacing: 12, chordU: 1.0,
 };
 
@@ -1303,9 +1336,38 @@ export function OWSJReinforcementCalc({
 
             {/* Inputs */}
             <div style={sR.moduleLeft}>
+              {/* Member type toggle */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ ...sR.flabel, marginBottom: 6 }}>Member type (ea. side)</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {['rod', 'angle'].map(t => (
+                    <button key={t}
+                      onClick={() => setInp(p => ({ ...p, webMemberType: t }))}
+                      style={{
+                        flex: 1, padding: '6px 0', fontSize: 12, fontWeight: 700,
+                        letterSpacing: '0.04em', textTransform: 'uppercase',
+                        cursor: 'pointer', borderRadius: 6, transition: 'all 0.15s',
+                        background: inp.webMemberType === t ? 'rgba(245,158,11,0.15)' : 'transparent',
+                        border: `1px solid ${inp.webMemberType === t ? '#f59e0b' : '#334155'}`,
+                        color: inp.webMemberType === t ? '#f59e0b' : '#64748b',
+                        fontFamily: "'IBM Plex Sans', sans-serif",
+                      }}>
+                      {t === 'rod' ? 'Round Rod' : 'L-Angle'}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div style={sR.fRow}>
-                <F label="Rod size (ea. side)"><RS value={inp.webDia} onChange={set("webDia")} /></F>
-                <F label="F_y (ksi)">{webLocked ? <LI value={inp.webFy} /> : <NI value={inp.webFy} onChange={set("webFy")} step={1} />}</F>
+                {inp.webMemberType === 'rod'
+                  ? <F label="Rod size (ea. side)"><RS value={inp.webDia} onChange={set('webDia')} /></F>
+                  : <F label="Angle size (ea. side)">
+                      <select style={sR.select} value={inp.webAngleIdx}
+                        onChange={e => setInp(p => ({ ...p, webAngleIdx: Number(e.target.value) }))}>
+                        {ANGLE_SIZES.map((a, i) => <option key={i} value={i}>{a.label}</option>)}
+                      </select>
+                    </F>
+                }
+                <F label="F_y (ksi)">{webLocked ? <LI value={inp.webFy} /> : <NI value={inp.webFy} onChange={set('webFy')} step={1} />}</F>
               </div>
               <div style={sR.fRow}>
                 <F label="E (ksi)">{webLocked ? <LI value={inp.webE} /> : <NI value={inp.webE} onChange={set("webE")} step={1000} />}</F>
@@ -1320,17 +1382,24 @@ export function OWSJReinforcementCalc({
                 <F label="l₁ near panel (in)">{webLocked ? <LI value={inp.l1} /> : <NI value={inp.l1} onChange={set("l1")} step={0.5} />}</F>
               </div>
               <div style={sR.fRow}>
-                <F label="l₂ far panel (in)">{webLocked ? <LI value={inp.l2} /> : <NI value={inp.l2} onChange={set("l2")} step={0.5} />}</F>
-                <F label="Braced mid-pt?">
-                  {webLocked
-                    ? <LI value={inp.braced ? "Yes — KL = L/2" : "No  — KL = L"} />
-                    : <select style={sR.select} value={inp.braced ? "Y" : "N"}
-                        onChange={e => setInp(p => ({ ...p, braced: e.target.value === "Y" }))}>
-                        <option value="Y">Yes — KL = L/2</option>
-                        <option value="N">No  — KL = L</option>
-                      </select>
-                  }
-                </F>
+                <F label="l₂ far panel (in)">{webLocked ? <LI value={inp.l2} /> : <NI value={inp.l2} onChange={set('l2')} step={0.5} />}</F>
+                {inp.webMemberType === 'rod' && (
+                  <F label="Braced mid-pt?">
+                    {webLocked
+                      ? <LI value={inp.braced ? 'Yes — KL = L/2' : 'No  — KL = L'} />
+                      : <select style={sR.select} value={inp.braced ? 'Y' : 'N'}
+                          onChange={e => setInp(p => ({ ...p, braced: e.target.value === 'Y' }))}>
+                          <option value="Y">Yes — KL = L/2</option>
+                          <option value="N">No  — KL = L</option>
+                        </select>
+                    }
+                  </F>
+                )}
+                {inp.webMemberType === 'angle' && (
+                  <F label="KL/r method" note="AISC 360-05 §E5">
+                    <LI value="Equiv. KL/r (one end)" />
+                  </F>
+                )}
               </div>
 
               {/* Joist web geometry diagram */}
@@ -1349,7 +1418,7 @@ export function OWSJReinforcementCalc({
               />
 
               <div style={sR.rSubHead(TR.amber)}>Tension check</div>
-              <RRow label="Rod area Ag (2 members)"            value={fi2(R.webAg)} />
+              <RRow label={R.useAngle ? 'Angle area Ag (2 angles)' : 'Rod area Ag (2 rods)'} value={fi2(R.webAg)} />
               <RRow label="F′y = Fy − fp"                      value={fks(R.FyAdj)} />
               <RRow label="Yield  →  F′y·Ag / 1.67"
                 value={fki(R.webTensYield)}
@@ -1370,13 +1439,14 @@ export function OWSJReinforcementCalc({
 
               <hr style={sR.divider} />
               <div style={sR.rSubHead(TR.amber)}>Compression check</div>
-              <RRow label="Member length"          value={fin(R.memberLen)} />
-              <RRow label="rx"                     value={f(R.rx, 4) + " in"} />
-              <RRow label="KL/r"                   value={f(R.KLr, 1)} />
-              <RRow label="Fe"                     value={fks(R.Fe)} />
-              <RRow label="Fcr"                    value={fks(R.Fcr)} />
-              <RRow label="Comp. capacity Pn/Ωc"   value={fki(R.webCompCap)}   ok={R.webCompOK}  na={!R.shearReqd} />
-              <RRow label="Weld capacity (comp.)"  value={fki(R.weldCapacity)} ok={R.weldCompOK} na={!R.shearReqd} />
+              <RRow label="Member length"           value={fin(R.memberLen)} />
+              <RRow label="rx"                      value={f(R.rx, 3) + ' in'} />
+              {R.useAngle && <RRow label="L/rx"     value={f(R.LoverRx, 1)} />}
+              <RRow label={R.useAngle ? "(KL/r)' — AISC 360-05 §E5" : "KL/r"} value={f(R.KLr, 1)} />
+              <RRow label="Fe"                      value={fks(R.Fe)} />
+              <RRow label="Fcr"                     value={fks(R.Fcr)} />
+              <RRow label="Comp. capacity Pn/Ωc"    value={fki(R.webCompCap)}   ok={R.webCompOK}  na={!R.shearReqd} />
+              <RRow label="Weld capacity (comp.)"   value={fki(R.weldCapacity)} ok={R.weldCompOK} na={!R.shearReqd} />
             </div>
           </div>
         </div>
@@ -1490,7 +1560,9 @@ export function OWSJReinforcementCalc({
           const spanLabel = scheduleZones ? scheduleZones.span : '—';
 
           // Rod size labels from ROD_SIZES lookup
-          const webRodLabel  = ROD_SIZES.find(r => r.dia === inp.webDia)?.label  || `${inp.webDia}" DIA. ROD`;
+          const webRodLabel  = inp.webMemberType === 'angle'
+            ? (ANGLE_SIZES[inp.webAngleIdx]?.label || 'ANGLE')
+            : (ROD_SIZES.find(r => r.dia === inp.webDia)?.label || `${inp.webDia}" DIA. ROD`);
           const chordRodLabel= ROD_SIZES.find(r => r.dia === inp.chordDia)?.label|| `${inp.chordDia}" DIA. ROD`;
 
           const cellBase = {
@@ -1616,10 +1688,12 @@ export function OWSJReinforcementCalc({
                     <td style={{ ...dataCell }}>{ms ? ms.A : '—'}</td>
                     <td style={{ ...dataCell }}>{ms ? ms.B : '—'}</td>
                     <td style={{ ...dataCell, borderRight: '2px solid #00aa55' }}>{ms ? `±${ms.C}` : '—'}</td>
-                    {/* Web rod size */}
+                    {/* Web reinf size */}
                     <td style={{ ...rodCell, borderRight: '2px solid #00aa55' }}>
-                      {webRodLabel.replace(' ROD', '').trim()}<br />
-                      <span style={{ fontSize: 10, color: '#00aa55', letterSpacing: '0.08em' }}>DIA. ROD</span>
+                      {inp.webMemberType === 'angle'
+                        ? <>{webRodLabel}<br /><span style={{ fontSize: 10, color: '#00aa55', letterSpacing: '0.08em' }}>EA. SIDE</span></>
+                        : <>{webRodLabel.replace(' ROD', '').trim()}<br /><span style={{ fontSize: 10, color: '#00aa55', letterSpacing: '0.08em' }}>DIA. ROD</span></>
+                      }
                     </td>
                     {/* D E F */}
                     <td style={{ ...dataCell }}>{vs ? vs.D : '—'}</td>
@@ -1640,7 +1714,7 @@ export function OWSJReinforcementCalc({
         <p style={sR.footer}>
           AISC 360-05 ASD · Ω_t = 1.67 (yield) / 2.00 (rupture) · Ω_c = 1.67 ·
           Tension capacity = min(F′y·Ag/1.67, Fu·U·Ag/2.00) · "governs" tag marks controlling term ·
-          Web compression: circular rod, no angle slenderness correction ·
+          Web compression (rod): circular rod, r = d/4, KL per braced flag · Web compression (angle): AISC 360-05 §E5 equiv. KL/r = 72+0.75(L/rx) or 32+1.25(L/rx), r_x per AISC tables ·
           Weld: 0.6 · 60ksi (E70 electrode) × 0.707 × a × L × 2 ·
           I_reinf must include chord rod contribution (parallel-axis from rod centroid to joist N.A.)
         </p>
@@ -1788,8 +1862,8 @@ export default function BarJoistCalculator() {
   }, [tab1Results, spanNum]);
 
   // Tab 2: Roof load (full span, psf with spacing)
-  const [roofDL_psf, setRoofDL_psf] = useState(0);
-  const [roofLL_psf, setRoofLL_psf] = useState(0);
+  const [roofDL_psf, setRoofDL_psf] = useState(20);
+  const [roofLL_psf, setRoofLL_psf] = useState(20);
   const [joistSpacing, setJoistSpacing] = useState(0);
   const [roofLoadType, setRoofLoadType] = useState("Live Load"); // "Live Load" or "Snow Load"
 
@@ -1845,6 +1919,31 @@ export default function BarJoistCalculator() {
       snowDriftR_psf, snowDriftRStart, snowDriftREnd,
       uniformLoads2,
       pointLoads2,
+    },
+    tab3: {
+      // All user-editable Tab 3 inputs (read-only demand fields excluded — they recompute from Tab 2)
+      fp:               reinfInp.fp,
+      l1:               reinfInp.l1,
+      l2:               reinfInp.l2,
+      braced:           reinfInp.braced,
+      webMemberType:    reinfInp.webMemberType,
+      webAngleIdx:      reinfInp.webAngleIdx,
+      webDia:           reinfInp.webDia,
+      webFy:            reinfInp.webFy,
+      webE:             reinfInp.webE,
+      webFu:            reinfInp.webFu,
+      weldSize:         reinfInp.weldSize,
+      weldLen:          reinfInp.weldLen,
+      U:                reinfInp.U,
+      chordDia:         reinfInp.chordDia,
+      chordFy:          reinfInp.chordFy,
+      chordFu:          reinfInp.chordFu,
+      chordE:           reinfInp.chordE,
+      chordWeldSpacing: reinfInp.chordWeldSpacing,
+      chordU:           reinfInp.chordU,
+      deflLimit:        reinfInp.deflLimit,
+      webLocked:        reinfWebLocked,
+      chordLocked:      reinfChordLocked,
     },
   });
 
@@ -1910,6 +2009,35 @@ export default function BarJoistCalculator() {
           }
           if (t.uniformLoads2) setUniformLoads2(t.uniformLoads2);
           if (t.pointLoads2) setPointLoads2(t.pointLoads2);
+        }
+        // Tab 3
+        if (d.tab3) {
+          const t = d.tab3;
+          setReinfInp(prev => ({
+            ...prev,
+            ...(t.fp               !== undefined && { fp:               t.fp }),
+            ...(t.l1               !== undefined && { l1:               t.l1 }),
+            ...(t.l2               !== undefined && { l2:               t.l2 }),
+            ...(t.braced           !== undefined && { braced:           t.braced }),
+            ...(t.webMemberType    !== undefined && { webMemberType:    t.webMemberType }),
+            ...(t.webAngleIdx      !== undefined && { webAngleIdx:      t.webAngleIdx }),
+            ...(t.webDia           !== undefined && { webDia:           t.webDia }),
+            ...(t.webFy            !== undefined && { webFy:            t.webFy }),
+            ...(t.webE             !== undefined && { webE:             t.webE }),
+            ...(t.webFu            !== undefined && { webFu:            t.webFu }),
+            ...(t.weldSize         !== undefined && { weldSize:         t.weldSize }),
+            ...(t.weldLen          !== undefined && { weldLen:          t.weldLen }),
+            ...(t.U                !== undefined && { U:                t.U }),
+            ...(t.chordDia         !== undefined && { chordDia:         t.chordDia }),
+            ...(t.chordFy          !== undefined && { chordFy:          t.chordFy }),
+            ...(t.chordFu          !== undefined && { chordFu:          t.chordFu }),
+            ...(t.chordE           !== undefined && { chordE:           t.chordE }),
+            ...(t.chordWeldSpacing !== undefined && { chordWeldSpacing: t.chordWeldSpacing }),
+            ...(t.chordU           !== undefined && { chordU:           t.chordU }),
+            ...(t.deflLimit        !== undefined && { deflLimit:        t.deflLimit }),
+          }));
+          if (t.webLocked   !== undefined) setReinfWebLocked(t.webLocked);
+          if (t.chordLocked !== undefined) setReinfChordLocked(t.chordLocked);
         }
       } catch (err) {
         alert("Could not read project file. Make sure it is a valid .bjc file.");
