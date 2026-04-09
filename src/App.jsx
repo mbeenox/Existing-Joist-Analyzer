@@ -1237,6 +1237,7 @@ export function OWSJReinforcementCalc({
   inp, setInp,
   webLocked, setWebLocked,
   chordLocked, setChordLocked,
+  scheduleZones = null,
 }) {
   useEffect(() => {
     setInp(prev => ({ ...prev, span, depth, RE, dM, Iunreinf, deflUnreinf }));
@@ -1481,6 +1482,160 @@ export function OWSJReinforcementCalc({
             ? "✓  All checks pass — reinforcing scheme is adequate."
             : "✗  One or more checks fail — revise rod size, weld geometry, or reinforcing scheme."}
         </div>
+
+        {/* ── REINFORCEMENT SCHEDULE TABLE ── */}
+        {(() => {
+          const ms = scheduleZones ? scheduleZones.momentSchedule : null;
+          const vs = scheduleZones ? scheduleZones.shearSchedule  : null;
+          const spanLabel = scheduleZones ? scheduleZones.span : '—';
+
+          // Rod size labels from ROD_SIZES lookup
+          const webRodLabel  = ROD_SIZES.find(r => r.dia === inp.webDia)?.label  || `${inp.webDia}" DIA. ROD`;
+          const chordRodLabel= ROD_SIZES.find(r => r.dia === inp.chordDia)?.label|| `${inp.chordDia}" DIA. ROD`;
+
+          const cellBase = {
+            padding: '8px 12px',
+            textAlign: 'center',
+            fontSize: 12,
+            fontFamily: TR.mono,
+            color: TR.text0,
+            borderRight: `1px solid #1a3a2a`,
+            borderBottom: `1px solid #1a3a2a`,
+          };
+          const headerCell = {
+            ...cellBase,
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.12em',
+            color: '#00ff88',
+            textTransform: 'uppercase',
+            background: '#0a1f14',
+            paddingTop: 10,
+            paddingBottom: 10,
+          };
+          const subHeaderCell = {
+            ...headerCell,
+            fontSize: 10,
+            letterSpacing: '0.10em',
+            color: '#00cc66',
+          };
+          const dataCell = {
+            ...cellBase,
+            fontSize: 13,
+            fontWeight: 600,
+            color: '#00ff88',
+            background: '#061209',
+          };
+          const rodCell = {
+            ...cellBase,
+            fontSize: 11,
+            fontWeight: 700,
+            color: '#00cc66',
+            background: '#0a1f14',
+            letterSpacing: '0.06em',
+          };
+          const spanCell = {
+            ...cellBase,
+            fontSize: 13,
+            fontWeight: 700,
+            color: '#00ff88',
+            background: '#061209',
+            borderRight: 'none',
+          };
+          const tableWrap = {
+            marginTop: 20,
+            border: '2px solid #00aa55',
+            borderRadius: 6,
+            overflow: 'hidden',
+            fontFamily: "'IBM Plex Sans', sans-serif",
+          };
+          const titleRow = {
+            background: '#061209',
+            borderBottom: '2px solid #00aa55',
+            textAlign: 'center',
+            padding: '10px 0 8px',
+            fontSize: 14,
+            fontWeight: 700,
+            letterSpacing: '0.22em',
+            color: '#00ff88',
+            textTransform: 'uppercase',
+          };
+
+          return (
+            <div style={tableWrap}>
+              <div style={titleRow}>Joist Reinforcement Schedule</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', background: '#061209' }}>
+                <colgroup>
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '12%' }} />
+                </colgroup>
+                <thead>
+                  {/* Row 1: group headers */}
+                  <tr>
+                    <th rowSpan={2} style={{ ...headerCell, verticalAlign: 'middle', borderRight: '2px solid #00aa55' }}>
+                      CHORD<br />REINF.
+                    </th>
+                    <th colSpan={3} style={{ ...headerCell, borderBottom: `1px solid #1a3a2a`, borderRight: '2px solid #00aa55' }}>
+                      CHORD REINF.
+                    </th>
+                    <th rowSpan={2} style={{ ...headerCell, verticalAlign: 'middle', borderRight: '2px solid #00aa55' }}>
+                      WEB<br />REINF.
+                    </th>
+                    <th colSpan={3} style={{ ...headerCell, borderBottom: `1px solid #1a3a2a`, borderRight: '2px solid #00aa55' }}>
+                      WEB REINF.
+                    </th>
+                    <th rowSpan={2} style={{ ...headerCell, verticalAlign: 'middle', borderRight: 'none' }}>
+                      SPAN
+                    </th>
+                  </tr>
+                  {/* Row 2: sub-labels A B C / D E F */}
+                  <tr>
+                    <th style={{ ...subHeaderCell, borderRight: `1px solid #1a3a2a` }}>"A"</th>
+                    <th style={{ ...subHeaderCell, borderRight: `1px solid #1a3a2a` }}>"B"</th>
+                    <th style={{ ...subHeaderCell, borderRight: '2px solid #00aa55' }}>"C"</th>
+                    <th style={{ ...subHeaderCell, borderRight: `1px solid #1a3a2a` }}>"D"</th>
+                    <th style={{ ...subHeaderCell, borderRight: `1px solid #1a3a2a` }}>"E"</th>
+                    <th style={{ ...subHeaderCell, borderRight: '2px solid #00aa55' }}>"F"</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    {/* Chord rod size */}
+                    <td style={{ ...rodCell, borderRight: '2px solid #00aa55' }}>
+                      {chordRodLabel.replace(' ROD', '').trim()}<br />
+                      <span style={{ fontSize: 10, color: '#00aa55', letterSpacing: '0.08em' }}>DIA. ROD</span>
+                    </td>
+                    {/* A B C */}
+                    <td style={{ ...dataCell }}>{ms ? ms.A : '—'}</td>
+                    <td style={{ ...dataCell }}>{ms ? ms.B : '—'}</td>
+                    <td style={{ ...dataCell, borderRight: '2px solid #00aa55' }}>{ms ? `±${ms.C}` : '—'}</td>
+                    {/* Web rod size */}
+                    <td style={{ ...rodCell, borderRight: '2px solid #00aa55' }}>
+                      {webRodLabel.replace(' ROD', '').trim()}<br />
+                      <span style={{ fontSize: 10, color: '#00aa55', letterSpacing: '0.08em' }}>DIA. ROD</span>
+                    </td>
+                    {/* D E F */}
+                    <td style={{ ...dataCell }}>{vs ? vs.D : '—'}</td>
+                    <td style={{ ...dataCell }}>{vs ? vs.E : '—'}</td>
+                    <td style={{ ...dataCell, borderRight: '2px solid #00aa55' }}>{vs ? `±${vs.F}` : '—'}</td>
+                    {/* Span */}
+                    <td style={spanCell}>±{spanLabel}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style={{ background: '#061209', borderTop: `1px solid #1a3a2a`, padding: '6px 14px', fontSize: 10, color: '#00aa55', letterSpacing: '0.06em' }}>
+                "A","B","C" from moment exceedance zones · "D","E","F" from shear exceedance zones · All dimensions rounded up to nearest 0′-6″ · "—" indicates no exceedance
+              </div>
+            </div>
+          );
+        })()}
 
         <p style={sR.footer}>
           AISC 360-05 ASD · Ω_t = 1.67 (yield) / 2.00 (rupture) · Ω_c = 1.67 ·
@@ -1874,6 +2029,99 @@ export default function BarJoistCalculator() {
   const [reinfWebLocked, setReinfWebLocked]     = useState(true);
   const [reinfChordLocked, setReinfChordLocked] = useState(true);
 
+  // ─── Reinforcement Schedule: compute A/B/C (moment) and D/E/F (shear) ───
+  // Helper: extract exceedance zones [{start, end}] from demand vs capacity arrays
+  const getExceedanceZones = (demandArr, demandX, capArr, capX) => {
+    const zones = [];
+    if (!demandArr || !capArr || !demandX || !capX) return zones;
+    let inExceed = false;
+    let exceedStart = 0;
+    const step = Math.max(1, Math.floor(demandArr.length / 500));
+    for (let i = 0; i <= demandArr.length; i += (i < demandArr.length ? step : 0)) {
+      if (i > demandArr.length - 1) i = demandArr.length - 1;
+      const xi = demandX[i];
+      const dVal = Math.abs(demandArr[i]);
+      // interpolate cap at xi
+      const idx = capX.findIndex(cx => cx >= xi);
+      let cVal = 0;
+      if (idx <= 0) cVal = Math.abs(capArr[0] || 0);
+      else {
+        const t = (xi - capX[idx - 1]) / (capX[idx] - capX[idx - 1] || 1);
+        cVal = Math.abs(capArr[idx - 1] + t * (capArr[idx] - capArr[idx - 1]));
+      }
+      const exceeds = dVal > cVal * 1.001;
+      if (exceeds && !inExceed) { exceedStart = xi; inExceed = true; }
+      else if (!exceeds && inExceed) { zones.push({ start: exceedStart, end: xi }); inExceed = false; }
+      if (i === demandArr.length - 1) {
+        if (inExceed) zones.push({ start: exceedStart, end: xi });
+        break;
+      }
+    }
+    return zones;
+  };
+
+  // Round up to nearest 0.5 ft, format as ft-in string
+  const roundUp05 = (v) => Math.ceil(v * 2) / 2;
+  const fmtFtIn = (v) => {
+    const r = roundUp05(v);
+    const ft = Math.floor(r);
+    const inches = Math.round((r - ft) * 12);
+    return inches === 0 ? `${ft}'-0"` : `${ft}'-${inches}"`;
+  };
+
+  const scheduleZones = useMemo(() => {
+    if (!tab2Results || !capacityEnvelope) return null;
+    const span = spanNum;
+
+    // Moment zones → A, B, C
+    const mZones = getExceedanceZones(tab2Results.M, tab2Results.x, capacityEnvelope.M, capacityEnvelope.x);
+    let momentSchedule = null;
+    if (mZones.length > 0) {
+      // Use the union of all moment exceedance zones (merge into single envelope)
+      const zStart = Math.min(...mZones.map(z => z.start));
+      const zEnd   = Math.max(...mZones.map(z => z.end));
+      momentSchedule = {
+        A: fmtFtIn(zStart),
+        B: fmtFtIn(zEnd - zStart),
+        C: fmtFtIn(span - zEnd),
+        Araw: roundUp05(zStart),
+        Braw: roundUp05(zEnd - zStart),
+        Craw: roundUp05(span - zEnd),
+      };
+    }
+
+    // Shear zones → D, E, F  (expect two zones: one near each end)
+    const vZones = getExceedanceZones(tab2Results.V, tab2Results.x, capacityEnvelope.V, capacityEnvelope.x);
+    let shearSchedule = null;
+    if (vZones.length >= 2) {
+      // Sort by start position
+      const sorted = [...vZones].sort((a, b) => a.start - b.start);
+      const z1 = sorted[0]; // near left end
+      const z2 = sorted[sorted.length - 1]; // near right end
+      shearSchedule = {
+        D: fmtFtIn(z1.end),
+        E: fmtFtIn(z2.start - z1.end),
+        F: fmtFtIn(span - z2.start),
+        Draw: roundUp05(z1.end),
+        Eraw: roundUp05(z2.start - z1.end),
+        Fraw: roundUp05(span - z2.start),
+      };
+    } else if (vZones.length === 1) {
+      // Only one zone (asymmetric loading) — put in D
+      const z1 = vZones[0];
+      shearSchedule = {
+        D: fmtFtIn(z1.end),
+        E: '—',
+        F: fmtFtIn(span - z1.end),
+        Draw: roundUp05(z1.end),
+        Eraw: null,
+        Fraw: roundUp05(span - z1.end),
+      };
+    }
+
+    return { momentSchedule, shearSchedule, span: fmtFtIn(span) };
+  }, [tab2Results, capacityEnvelope, spanNum]);
+
   // ─── Styles ───
   const s = {
     app: {
@@ -1979,6 +2227,8 @@ export default function BarJoistCalculator() {
 
   return (
     <div style={s.app}>
+      <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+
       {/* Hidden file input for Open */}
       <input
         ref={fileInputRef}
@@ -2511,6 +2761,7 @@ export default function BarJoistCalculator() {
             setWebLocked={setReinfWebLocked}
             chordLocked={reinfChordLocked}
             setChordLocked={setReinfChordLocked}
+            scheduleZones={scheduleZones}
           />
         )}
       </div>
