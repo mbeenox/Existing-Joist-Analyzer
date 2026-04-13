@@ -2179,9 +2179,12 @@ export default function BarJoistCalculator() {
       }
       const exceeds = dVal > cVal * 1.001;
       if (exceeds && !inExceed) { exceedStart = xi; inExceed = true; }
-      else if (!exceeds && inExceed) { zones.push({ start: exceedStart, end: xi }); inExceed = false; }
+      else if (!exceeds && inExceed) {
+        if (xi - exceedStart >= 0.25) zones.push({ start: exceedStart, end: xi }); // filter sub-panel artifacts
+        inExceed = false;
+      }
       if (i === demandArr.length - 1) {
-        if (inExceed) zones.push({ start: exceedStart, end: xi });
+        if (inExceed && xi - exceedStart >= 0.25) zones.push({ start: exceedStart, end: xi });
         break;
       }
     }
@@ -2210,9 +2213,9 @@ export default function BarJoistCalculator() {
     if (mZones.length > 0) {
       const zStart = Math.min(...mZones.map(z => z.start));
       const zEnd   = Math.max(...mZones.map(z => z.end));
-      const A = roundUp05(zStart);
-      const B = roundUp05(zEnd - zStart);
-      const C = span - A - B;           // exact remainder — always sums to span
+      const A = Math.min(roundUp05(zStart), span);           // cap so A ≤ span
+      const B = Math.min(roundUp05(zEnd - zStart), span - A); // cap so A+B ≤ span
+      const C = span - A - B;                                // exact non-negative remainder
       momentSchedule = { A: fmtFtIn(A), B: fmtFtIn(B), C: fmtFtIn(C) };
     }
 
@@ -2224,13 +2227,13 @@ export default function BarJoistCalculator() {
       const sorted = [...vZones].sort((a, b) => a.start - b.start);
       const z1 = sorted[0];
       const z2 = sorted[sorted.length - 1];
-      const D = roundUp05(z1.end);
-      const F = roundUp05(span - z2.start);
-      const E = span - D - F;           // exact remainder
+      const D = Math.min(roundUp05(z1.end), span);
+      const F = Math.min(roundUp05(span - z2.start), span - D); // cap so D+F ≤ span
+      const E = span - D - F;           // exact non-negative remainder
       shearSchedule = { D: fmtFtIn(D), E: fmtFtIn(E), F: fmtFtIn(F) };
     } else if (vZones.length === 1) {
       const z1 = vZones[0];
-      const D = roundUp05(z1.end);
+      const D = Math.min(roundUp05(z1.end), span);
       const F = span - D;               // exact remainder
       shearSchedule = { D: fmtFtIn(D), E: '—', F: fmtFtIn(F) };
     }
