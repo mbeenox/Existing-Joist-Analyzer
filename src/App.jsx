@@ -2032,7 +2032,52 @@ function generateReportHTML(data) {
     "</body></html>";
 }
 
+// Helper: blank joist state snapshot
+function blankJoistState(name) {
+  return {
+    id: "joist_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+    name,
+    activeTab: "tab1",
+    joistSeries: "K",
+    joistId: "",
+    span: "",
+    liveLoad: 0,
+    deadLoad: 0,
+    Eval: 29000,
+    Ival: 0,
+    llOverridden: false,
+    dlOverridden: false,
+    eOverridden: false,
+    iOverridden: false,
+    mechUL: { w: 0, a: 0, b: 0 },
+    mechPL: { P: 0, d: 0 },
+    roofDL_psf: 20,
+    roofLL_psf: 20,
+    joistSpacing: 0,
+    roofLoadType: "Live Load",
+    snowDriftL_psf: 0,
+    snowDriftLStart: 0,
+    snowDriftLEnd: 0,
+    snowDriftR_psf: 0,
+    snowDriftRStart: 0,
+    snowDriftREnd: 0,
+    uniformLoads2: [],
+    pointLoads2: [],
+    reinfInp: { ...DEFAULTS, span: 0, depth: 0, RE: 0, dM: 0, Iunreinf: 0, deflUnreinf: 0 },
+    reinfWebLocked: true,
+    reinfChordLocked: true,
+  };
+}
+
 export default function BarJoistCalculator() {
+  // ---- Multi-joist sidebar state ----
+  const firstJoist = blankJoistState("Joist 1");
+  const [joists, setJoists] = useState([firstJoist]);
+  const [activeJoistId, setActiveJoistId] = useState(firstJoist.id);
+  const [editingJoistId, setEditingJoistId] = useState(null);
+  const [editingJoistName, setEditingJoistName] = useState("");
+  const editInputRef = useRef(null);
+
   const [activeTab, setActiveTab] = useState("tab1");
   const [projectName, setProjectName] = useState("Untitled Project");
   const [joistSeries, setJoistSeries] = useState("K"); // "K" or "KCS"
@@ -2532,6 +2577,129 @@ export default function BarJoistCalculator() {
   const [reinfWebLocked, setReinfWebLocked]     = useState(true);
   const [reinfChordLocked, setReinfChordLocked] = useState(true);
 
+  // --- Multi-joist: capture current editor state into a snapshot object ---
+  const captureSnapshot = () => ({
+    activeTab,
+    joistSeries,
+    joistId,
+    span,
+    liveLoad,
+    deadLoad,
+    Eval,
+    Ival,
+    llOverridden,
+    dlOverridden,
+    eOverridden,
+    iOverridden,
+    mechUL,
+    mechPL,
+    roofDL_psf,
+    roofLL_psf,
+    joistSpacing,
+    roofLoadType,
+    snowDriftL_psf,
+    snowDriftLStart,
+    snowDriftLEnd,
+    snowDriftR_psf,
+    snowDriftRStart,
+    snowDriftREnd,
+    uniformLoads2,
+    pointLoads2,
+    reinfInp,
+    reinfWebLocked,
+    reinfChordLocked,
+  });
+
+  // Restore all editor state from a snapshot object
+  const restoreSnapshot = (snap) => {
+    setActiveTab(snap.activeTab || "tab1");
+    setJoistSeries(snap.joistSeries || "K");
+    setJoistId(snap.joistId || "");
+    setSpan(snap.span || "");
+    setLiveLoad(snap.liveLoad || 0);
+    setDeadLoad(snap.deadLoad || 0);
+    setEval(snap.Eval || 29000);
+    setIval(snap.Ival || 0);
+    setLlOverridden(snap.llOverridden || false);
+    setDlOverridden(snap.dlOverridden || false);
+    setEOverridden(snap.eOverridden || false);
+    setIOverridden(snap.iOverridden || false);
+    setMechUL(snap.mechUL || { w: 0, a: 0, b: 0 });
+    setMechPL(snap.mechPL || { P: 0, d: 0 });
+    setRoofDL_psf(snap.roofDL_psf !== undefined ? snap.roofDL_psf : 20);
+    setRoofLL_psf(snap.roofLL_psf !== undefined ? snap.roofLL_psf : 20);
+    setJoistSpacing(snap.joistSpacing || 0);
+    setRoofLoadType(snap.roofLoadType || "Live Load");
+    setSnowDriftL_psf(snap.snowDriftL_psf || 0);
+    setSnowDriftLStart(snap.snowDriftLStart || 0);
+    setSnowDriftLEnd(snap.snowDriftLEnd || 0);
+    setSnowDriftR_psf(snap.snowDriftR_psf || 0);
+    setSnowDriftRStart(snap.snowDriftRStart || 0);
+    setSnowDriftREnd(snap.snowDriftREnd || 0);
+    setUniformLoads2(snap.uniformLoads2 || []);
+    setPointLoads2(snap.pointLoads2 || []);
+    setReinfInp(snap.reinfInp || { ...DEFAULTS, span: 0, depth: 0, RE: 0, dM: 0, Iunreinf: 0, deflUnreinf: 0 });
+    setReinfWebLocked(snap.reinfWebLocked !== undefined ? snap.reinfWebLocked : true);
+    setReinfChordLocked(snap.reinfChordLocked !== undefined ? snap.reinfChordLocked : true);
+  };
+
+  // Switch to a different joist: save current, restore target
+  const switchToJoist = (targetId) => {
+    if (targetId === activeJoistId) return;
+    const snap = captureSnapshot();
+    setJoists(prev => prev.map(j => j.id === activeJoistId ? { ...j, ...snap } : j));
+    const target = joists.find(j => j.id === targetId);
+    if (target) {
+      restoreSnapshot(target);
+      setActiveJoistId(targetId);
+    }
+  };
+
+  // Add a new joist
+  const addJoist = () => {
+    // Save current state first
+    const snap = captureSnapshot();
+    setJoists(prev => {
+      const updated = prev.map(j => j.id === activeJoistId ? { ...j, ...snap } : j);
+      const newName = "Joist " + (updated.length + 1);
+      const newJ = blankJoistState(newName);
+      // Restore blank state for new joist
+      restoreSnapshot(newJ);
+      setActiveJoistId(newJ.id);
+      return [...updated, newJ];
+    });
+  };
+
+  // Delete a joist (must keep at least 1)
+  const deleteJoist = (targetId) => {
+    setJoists(prev => {
+      if (prev.length <= 1) return prev;
+      const remaining = prev.filter(j => j.id !== targetId);
+      if (targetId === activeJoistId) {
+        const newActive = remaining[0];
+        restoreSnapshot(newActive);
+        setActiveJoistId(newActive.id);
+      }
+      return remaining;
+    });
+  };
+
+  // Start inline rename
+  const startRename = (j) => {
+    setEditingJoistId(j.id);
+    setEditingJoistName(j.name);
+    setTimeout(() => editInputRef.current && editInputRef.current.focus(), 30);
+  };
+
+  // Commit rename
+  const commitRename = () => {
+    if (!editingJoistId) return;
+    const trimmed = editingJoistName.trim();
+    setJoists(prev => prev.map(j => j.id === editingJoistId ? { ...j, name: trimmed || j.name } : j));
+    setEditingJoistId(null);
+    setEditingJoistName("");
+  };
+
   // --- Reinforcement Schedule: compute A/B/C (moment) and D/E/F (shear) ---
   // Helper: extract exceedance zones [{start, end}] from demand vs capacity arrays
   const getExceedanceZones = (demandArr, demandX, capArr, capX) => {
@@ -2624,6 +2792,95 @@ export default function BarJoistCalculator() {
       color: "#e2e8f0",
       minHeight: "100vh",
       padding: 0,
+      display: "flex",
+      flexDirection: "column",
+    },
+    sidebar: {
+      width: 200,
+      minWidth: 200,
+      background: "#111827",
+      borderRight: "1px solid #1e293b",
+      display: "flex",
+      flexDirection: "column",
+      flexShrink: 0,
+      overflowY: "auto",
+      paddingBottom: 16,
+    },
+    sidebarAddBtn: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      width: "100%",
+      padding: "10px 14px",
+      background: "rgba(56,189,248,0.08)",
+      border: "none",
+      borderBottom: "1px solid #1e293b",
+      color: "#38bdf8",
+      fontSize: 12,
+      fontWeight: 700,
+      letterSpacing: "0.06em",
+      cursor: "pointer",
+      fontFamily: "'IBM Plex Sans', sans-serif",
+      textTransform: "uppercase",
+      transition: "background 0.15s",
+    },
+    sidebarLabel: {
+      padding: "8px 14px 4px 14px",
+      fontSize: 9,
+      fontWeight: 700,
+      color: "#475569",
+      textTransform: "uppercase",
+      letterSpacing: "0.1em",
+    },
+    sidebarItem: (active) => ({
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      padding: "7px 10px 7px 12px",
+      cursor: "pointer",
+      background: active ? "rgba(56,189,248,0.1)" : "transparent",
+      borderLeft: active ? "2px solid #38bdf8" : "2px solid transparent",
+      borderRadius: "0 4px 4px 0",
+      marginRight: 6,
+      transition: "background 0.12s",
+    }),
+    sidebarItemName: (active) => ({
+      flex: 1,
+      fontSize: 12,
+      fontWeight: active ? 700 : 400,
+      color: active ? "#e2e8f0" : "#94a3b8",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+    }),
+    sidebarIconBtn: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: "2px 3px",
+      borderRadius: 3,
+      display: "flex",
+      alignItems: "center",
+      color: "#475569",
+      flexShrink: 0,
+    },
+    sidebarEditInput: {
+      flex: 1,
+      background: "#1e293b",
+      border: "1px solid #38bdf8",
+      borderRadius: 4,
+      color: "#e2e8f0",
+      fontSize: 12,
+      padding: "1px 5px",
+      outline: "none",
+      fontFamily: "'IBM Plex Sans', sans-serif",
+      minWidth: 0,
+    },
+    mainContent: {
+      flex: 1,
+      minWidth: 0,
+      display: "flex",
+      flexDirection: "column",
     },
     header: {
       background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
@@ -2795,6 +3052,76 @@ export default function BarJoistCalculator() {
         </div>
       </div>
 
+      {/* Body: Sidebar + Main Content */}
+      <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+
+        {/* Sidebar */}
+        <div style={s.sidebar}>
+          <button
+            style={s.sidebarAddBtn}
+            onClick={addJoist}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(56,189,248,0.15)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(56,189,248,0.08)"}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Joist
+          </button>
+          <div style={s.sidebarLabel}>Joist List</div>
+          {joists.map(j => {
+            const isActive = j.id === activeJoistId;
+            const isEditing = j.id === editingJoistId;
+            return (
+              <div
+                key={j.id}
+                style={s.sidebarItem(isActive)}
+                onClick={() => !isEditing && switchToJoist(j.id)}
+                onDoubleClick={() => !isEditing && switchToJoist(j.id)}
+              >
+                {isEditing ? (
+                  <input
+                    ref={editInputRef}
+                    style={s.sidebarEditInput}
+                    value={editingJoistName}
+                    onChange={e => setEditingJoistName(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setEditingJoistId(null); } }}
+                    onClick={e => e.stopPropagation()}
+                  />
+                ) : (
+                  <span style={s.sidebarItemName(isActive)} title={j.name}>{j.name}</span>
+                )}
+                {!isEditing && (
+                  <>
+                    <button
+                      style={s.sidebarIconBtn}
+                      title="Rename"
+                      onClick={e => { e.stopPropagation(); switchToJoist(j.id); setTimeout(() => startRename(j), 50); }}
+                      onMouseEnter={e => e.currentTarget.style.color = "#94a3b8"}
+                      onMouseLeave={e => e.currentTarget.style.color = "#475569"}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    {joists.length > 1 && (
+                      <button
+                        style={s.sidebarIconBtn}
+                        title="Delete joist"
+                        onClick={e => { e.stopPropagation(); deleteJoist(j.id); }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#ef4444"}
+                        onMouseLeave={e => e.currentTarget.style.color = "#475569"}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Main Content (tabs) */}
+        <div style={s.mainContent}>
+
       {/* Tab Bar */}
       <div style={s.tabBar}>
         <button style={s.tab(activeTab === "tab1")} onClick={() => setActiveTab("tab1")}>1. Existing Joist Capacity</button>
@@ -2827,7 +3154,7 @@ export default function BarJoistCalculator() {
               ))}
             </div>
 
-            <div style={s.grid(isKCS ? 3 : 2)}>
+            <div style={s.grid(3)}>
               <div>
                 <label style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Joist Designation</label>
                 <select
@@ -2865,12 +3192,12 @@ export default function BarJoistCalculator() {
                   </select>
                 </div>
               )}
-              {isKCS && joistRecord && (
-                <div>
-                  <label style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Depth</label>
-                  <div style={{ ...s.select, color: '#38bdf8', background: '#0f172a', cursor: 'default' }}>{joistRecord.depth}"</div>
+              <div>
+                <label style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Depth (in)</label>
+                <div style={{ ...s.select, color: joistRecord ? '#38bdf8' : '#475569', background: '#0f172a', cursor: 'default' }}>
+                  {joistRecord ? joistDepthIn + '"' : '--'}
                 </div>
-              )}
+              </div>
             </div>
           </div>
 
@@ -3354,6 +3681,8 @@ export default function BarJoistCalculator() {
             scheduleZones={scheduleZones}
           />
         )}
+      </div>
+        </div>
       </div>
     </div>
   );
