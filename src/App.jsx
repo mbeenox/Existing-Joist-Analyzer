@@ -2454,102 +2454,102 @@ export default function BarJoistCalculator() {
 
   // Build report data object from a joist snapshot (mirrors old generateReport args)
   const buildReportData = (snap, joistName) => {
-    // Temporarily restore snapshot into local vars for analysis
-    // We use the analyzeBeam results already baked into the snapshot via tab2Results
-    // For joists not currently active we need to compute results from their snapshot
-    const snapJoistId   = snap.joistId || '';
-    const snapSeries    = snap.joistSeries || 'K';
-    const snapIsKCS     = snapSeries === 'KCS';
-    const snapSpanStr   = snap.span || '';
-    const snapSpanNum   = parseFloat(snapSpanStr) || 0;
+    const snapJoistId  = snap.joistId || '';
+    const snapSeries   = snap.joistSeries || 'K';
+    const snapIsKCS    = snapSeries === 'KCS';
+    const snapSpanStr  = snap.span || '';
+    const snapSpanNum  = parseFloat(snapSpanStr) || 0;
+    if (!snapJoistId || !snapSpanNum) return null;
+
     // Lookup joist record
     let snapJoistRecord = null;
     if (snapIsKCS) {
       snapJoistRecord = KCS_DB[snapJoistId] ? { ...KCS_DB[snapJoistId], isKCS: true } : null;
     } else {
       const entry = JOIST_DB[snapJoistId];
-      if (entry && snapSpanNum) {
-        const row = entry.find(r => r[0] === snapSpanNum);
+      if (entry) {
+        const row = entry.find(function(r) { return r[0] === snapSpanNum; });
         if (row) snapJoistRecord = { isKCS: false, total_load_plf: row[1], live_load_l360_plf: row[2] };
       }
     }
     if (!snapJoistRecord) return null;
 
-    // Recompute beam analyses from snapshot
-    const snapE = snap.Eval || 29000;
-    const snapI = snap.Ival || 0;
-    const snapLL = snap.liveLoad || 0;
-    const snapDL = snap.deadLoad || 0;
+    const snapE   = snap.Eval    || 29000;
+    const snapI   = snap.Ival    || 0;
+    const snapLL  = snap.liveLoad  || 0;
+    const snapDL  = snap.deadLoad  || 0;
     const snapMechUL = snap.mechUL || { w: 0, a: 0, b: 0 };
     const snapMechPL = snap.mechPL || { P: 0, d: 0 };
 
-    const tab1Loads = [];
+    // --- Tab 1 beam analysis (correct analyzeBeam signature) ---
+    let t1UL = [], t1PL = [];
     if (snapIsKCS) {
       const Mallow = snapJoistRecord.momentCap_kft * 1000;
       const wEquiv = snapSpanNum > 0 ? 8 * Mallow / (snapSpanNum * snapSpanNum) : 0;
-      tab1Loads.push({ type: 'uniform', w: wEquiv, a: 0, b: snapSpanNum });
+      t1UL = [{ w: wEquiv, a: 0, b: snapSpanNum }];
     } else {
-      const wTot = snapLL + snapDL;
-      tab1Loads.push({ type: 'uniform', w: wTot, a: 0, b: snapSpanNum });
-      if (snapMechUL.w > 0) tab1Loads.push({ type: 'uniform', w: snapMechUL.w, a: snapMechUL.a, b: snapMechUL.b });
-      if (snapMechPL.P > 0) tab1Loads.push({ type: 'point', P: snapMechPL.P, d: snapMechPL.d });
+      t1UL = [{ w: snapLL + snapDL, a: 0, b: snapSpanNum }];
+      if (snapMechUL.w > 0) t1UL.push({ w: snapMechUL.w, a: snapMechUL.a, b: snapMechUL.b });
+      if (snapMechPL.P > 0) t1PL = [{ P: snapMechPL.P, d: snapMechPL.d }];
     }
-    const snapTab1Results = analyzeBeam(snapSpanNum, snapE, snapI, tab1Loads);
+    const snapTab1Results = analyzeBeam(snapSpanNum, t1UL, t1PL, snapE, snapI);
 
-    // Build capacity envelope
-    let snapMallow, snapVmax;
-    if (snapIsKCS) {
-      snapMallow = snapJoistRecord.momentCap_kft * 1000;
-      snapVmax   = snapJoistRecord.shearCap_lb;
-    } else {
-      snapMallow = snapTab1Results ? snapTab1Results.maxM : 0;
-      snapVmax   = snapTab1Results ? snapTab1Results.maxV : 0;
-    }
+    // --- Capacity envelope ---
+    const snapMallow = snapIsKCS ? snapJoistRecord.momentCap_kft * 1000 : (snapTab1Results ? snapTab1Results.maxM : 0);
+    const snapVmax   = snapIsKCS ? snapJoistRecord.shearCap_lb         : (snapTab1Results ? snapTab1Results.maxV : 0);
     const snapCapEnv = snapTab1Results ? buildCapacityEnvelope(snapSpanNum, snapMallow, snapVmax, snapIsKCS) : null;
 
-    // Tab 2 loads
-    const snapSpacing  = snap.joistSpacing || 0;
-    const snapRoofDL   = snap.roofDL_psf || 0;
-    const snapRoofLL   = snap.roofLL_psf || 0;
-    const snapLoadType = snap.roofLoadType || 'Live Load';
-    const snapUL2      = snap.uniformLoads2 || [];
-    const snapPL2      = snap.pointLoads2 || [];
-    const snapSDLpsf   = snap.snowDriftL_psf || 0;
-    const snapSDLStart = snap.snowDriftLStart || 0;
-    const snapSDLEnd   = snap.snowDriftLEnd || 0;
-    const snapSDRpsf   = snap.snowDriftR_psf || 0;
-    const snapSDRStart = snap.snowDriftRStart || 0;
-    const snapSDREnd   = snap.snowDriftREnd || 0;
+    // --- Tab 2 beam analysis ---
+    const snapSpacing  = snap.joistSpacing  || 0;
+    const snapRoofDL   = snap.roofDL_psf    || 0;
+    const snapRoofLL   = snap.roofLL_psf    || 0;
+    const snapLoadType = snap.roofLoadType  || 'Live Load';
+    const snapUL2      = Array.isArray(snap.uniformLoads2) ? snap.uniformLoads2 : [];
+    const snapPL2      = Array.isArray(snap.pointLoads2)   ? snap.pointLoads2   : [];
+    const snapSDLpsf   = snap.snowDriftL_psf   || 0;
+    const snapSDLStart = snap.snowDriftLStart  || 0;
+    const snapSDLEnd   = snap.snowDriftLEnd    || 0;
+    const snapSDRpsf   = snap.snowDriftR_psf   || 0;
+    const snapSDRStart = snap.snowDriftRStart  || 0;
+    const snapSDREnd   = snap.snowDriftREnd    || 0;
 
-    const tab2Loads = [];
+    let snapTab2Results = null;
+    let snapComparison  = null;
     if (snapSpacing > 0) {
-      tab2Loads.push({ type: 'uniform', w: snapRoofDL * snapSpacing, a: 0, b: snapSpanNum, loadType: 'Dead Load' });
-      tab2Loads.push({ type: 'uniform', w: snapRoofLL * snapSpacing, a: 0, b: snapSpanNum, loadType: snapLoadType });
-      if (snapSDLpsf > 0) tab2Loads.push({ type: 'triangular', w: snapSDLpsf * snapSpacing, a: snapSDLStart, b: snapSDLEnd, loadType: snapLoadType });
-      if (snapSDRpsf > 0) tab2Loads.push({ type: 'triangular', w: snapSDRpsf * snapSpacing, a: snapSDRStart, b: snapSDREnd, dir: 'right', loadType: snapLoadType });
-      snapUL2.forEach(u => tab2Loads.push({ type: 'uniform', w: u.w * snapSpacing, a: u.a, b: u.b, loadType: u.type }));
-      snapPL2.forEach(pl => tab2Loads.push({ type: 'point', P: pl.P, d: pl.d, loadType: pl.type }));
+      const t2UL = [
+        { w: snapRoofDL * snapSpacing, a: 0, b: snapSpanNum },
+        { w: snapRoofLL * snapSpacing, a: 0, b: snapSpanNum },
+      ];
+      snapUL2.forEach(function(u) { t2UL.push({ w: u.w * snapSpacing, a: u.a, b: u.b }); });
+
+      const t2PL = [];
+      snapPL2.forEach(function(pl) { t2PL.push({ P: pl.P, d: pl.d }); });
+
+      const t2TL = [];
+      if (snapSDLpsf > 0) t2TL.push({ wStart: snapSDLpsf * snapSpacing, wEnd: 0, a: snapSDLStart, b: snapSDLEnd });
+      if (snapSDRpsf > 0) t2TL.push({ wStart: 0, wEnd: snapSDRpsf * snapSpacing, a: snapSDRStart, b: snapSDREnd });
+
+      snapTab2Results = analyzeBeam(snapSpanNum, t2UL, t2PL, snapE, snapI, t2TL);
+      snapComparison  = (snapTab2Results && snapCapEnv) ? buildComparison(snapTab2Results, snapCapEnv, snapSpanNum, snapI) : null;
     }
-    const snapTab2Results = tab2Loads.length > 0 ? analyzeBeam(snapSpanNum, snapE, snapI, tab2Loads) : null;
-    const snapComparison  = (snapTab2Results && snapCapEnv) ? buildComparison(snapTab2Results, snapCapEnv, snapSpanNum, snapI) : null;
 
     return {
       projectName,
       joistName,
-      joistId: snapJoistId,
-      span:    snapSpanStr,
-      isKCS:   snapIsKCS,
-      joistRecord: snapJoistRecord,
-      liveLoad:    snapLL,
-      deadLoad:    snapDL,
-      Eval:        snapE,
-      Ival:        snapI,
-      mechUL:      snapMechUL,
-      mechPL:      snapMechPL,
-      tab1Results: snapTab1Results,
+      joistId:          snapJoistId,
+      span:             snapSpanStr,
+      isKCS:            snapIsKCS,
+      joistRecord:      snapJoistRecord,
+      liveLoad:         snapLL,
+      deadLoad:         snapDL,
+      Eval:             snapE,
+      Ival:             snapI,
+      mechUL:           snapMechUL,
+      mechPL:           snapMechPL,
+      tab1Results:      snapTab1Results,
       capacityEnvelope: snapCapEnv,
-      tab2Results: snapTab2Results,
-      comparison:  snapComparison,
+      tab2Results:      snapTab2Results,
+      comparison:       snapComparison,
       roofDL_psf:       snapRoofDL,
       roofLL_psf:       snapRoofLL,
       joistSpacing:     snapSpacing,
@@ -2560,10 +2560,10 @@ export default function BarJoistCalculator() {
       snowDriftR_psf:   snapSDRpsf,
       snowDriftRStart:  snapSDRStart,
       snowDriftREnd:    snapSDREnd,
-      uniformLoads2: snapUL2,
-      pointLoads2:   snapPL2,
-      reinfInp:      snap.reinfInp || { ...DEFAULTS },
-      scheduleZones: null,
+      uniformLoads2:    snapUL2,
+      pointLoads2:      snapPL2,
+      reinfInp:         snap.reinfInp || { ...DEFAULTS },
+      scheduleZones:    null,
     };
   };
 
@@ -2585,34 +2585,47 @@ export default function BarJoistCalculator() {
         const bodyContent = bodyMatch ? bodyMatch[1] : '';
         // Strip the auto-print script from intermediate reports
         const stripped = bodyContent.replace(/<script>[\s\S]*?<\/script>/g, '');
-        if (idx > 0) {
-          // Divider page between instances
-          combinedInner +=
-            '<div class="divider-page">' +
-            '<div class="divider-line"></div>' +
-            '<div class="divider-label">' + j.name + '</div>' +
-            '<div class="divider-sub">' + (data.joistId || 'No joist selected') + (data.span ? '  |  Span: ' + data.span + ' ft' : '') + '</div>' +
-            '<div class="divider-line"></div>' +
-            '</div>';
-        }
-        // Instance header banner
-        combinedInner +=
+        // Replace all class="page" with class="page page-inner" so page-break-after:always
+        // is overridden for ALL pages within a combined report. Page breaks between Tab 1/2/3
+        // are re-introduced explicitly via page-break-before on each page after the first.
+        const lastPageFixed = stripped
+          .split('class="page"')
+          .join('class="page page-inner"');
+        // Inject instance header banner into the top of the first .page-inner div
+        // so it never floats as a standalone element between page breaks
+        const instanceHeader =
           '<div class="instance-header">' +
           '<div class="instance-number">Joist ' + (idx + 1) + ' of ' + selected.length + '</div>' +
           '<div class="instance-name">' + j.name + '</div>' +
           '<div class="instance-detail">' + (data.joistId || '--') + (data.span ? '  |  Span: ' + data.span + ' ft' : '') + '  |  Series: ' + (data.isKCS ? 'KCS' : 'K') + '</div>' +
           '</div>';
-        combinedInner += stripped;
+        // Insert header right after the opening of the first .page-inner div
+        const firstPageInnerIdx = lastPageFixed.indexOf('class="page page-inner"');
+        const insertAfter = firstPageInnerIdx >= 0
+          ? lastPageFixed.indexOf('>', firstPageInnerIdx) + 1
+          : -1;
+        const withHeader = insertAfter >= 0
+          ? lastPageFixed.slice(0, insertAfter) + instanceHeader + lastPageFixed.slice(insertAfter)
+          : instanceHeader + lastPageFixed;
+        combinedInner += withHeader;
       });
 
       if (!combinedInner) { alert('No valid joist data to print. Select a joist designation first.'); return; }
 
+      // Add page-break-before:always to every .page-inner except the first one
+      // so Tab1->Tab2->Tab3 pages break correctly without a trailing blank page
+      const parts = combinedInner.split('class="page page-inner"');
+      const fixedInner = parts
+        .map(function(part, i) { return i === 0 ? part : 'class="page page-inner page-break"' + part; })
+        .join('');
+
       const dividerCss =
-        '.divider-page { width:8.5in; min-height:2in; display:flex; flex-direction:column; align-items:center; justify-content:center; page-break-before:always; page-break-after:always; padding:0.5in 1in; }' +
+        '.page-inner { page-break-after: auto !important; }' +
+        '.page-break { page-break-before: always !important; }' +
         '.divider-line { width:100%; border-top:3px solid #1e3a5f; margin:18px 0; }' +
         '.divider-label { font-size:22pt; font-weight:700; color:#1e3a5f; letter-spacing:0.04em; text-align:center; }' +
         '.divider-sub { font-size:10pt; color:#64748b; text-align:center; margin-top:6px; font-family:monospace; }' +
-        '.instance-header { width:8.5in; background:#1e3a5f; color:#fff; padding:10px 0.65in; margin-bottom:0; display:flex; align-items:baseline; gap:18px; page-break-after:avoid; }' +
+        '.instance-header { background:#1e3a5f; color:#fff; padding:8px 0.65in; margin:-0.6in -0.65in 14px -0.65in; display:flex; align-items:baseline; gap:18px; }' +
         '.instance-number { font-size:8pt; color:#93c5fd; text-transform:uppercase; letter-spacing:0.1em; flex-shrink:0; }' +
         '.instance-name { font-size:14pt; font-weight:700; letter-spacing:0.04em; }' +
         '.instance-detail { font-size:9pt; color:#93c5fd; font-family:monospace; margin-left:auto; }';
@@ -2669,7 +2682,7 @@ export default function BarJoistCalculator() {
         dividerCss +
         '</style></head><body>' +
         coverPage +
-        combinedInner +
+        fixedInner +
         '<script>window.onload=function(){window.print();}<\/script>' +
         '</body></html>';
 
