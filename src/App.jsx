@@ -2032,6 +2032,71 @@ function generateReportHTML(data) {
     "</body></html>";
 }
 
+// Helper: build capacity envelope from tab1 results (module scope, used by report)
+function buildCapacityEnvelope(spanNum, Mallow, Vmax, isKCS) {
+  if (!spanNum) return null;
+  var L = spanNum;
+  var n = NUM_POINTS;
+  var dx = L / n;
+  var xArr = Array.from({ length: n + 1 }, function(_, i) { return i * dx; });
+  var Menv = xArr.map(function(x) {
+    if (x <= 4) return (Mallow / 4) * x;
+    if (x >= L - 4) return (Mallow / 4) * (L - x);
+    return Mallow;
+  });
+  var Vcap = isKCS ? Vmax : 0.25 * Vmax;
+  var slopeRate = isKCS ? 0 : (Vmax - Vcap) / (0.375 * L);
+  var Venv = xArr.map(function(x) {
+    if (isKCS) return x < 0.5 * L ? Vmax : x > 0.5 * L ? -Vmax : 0;
+    if (x <= 0.375 * L) return Vmax - slopeRate * x;
+    if (x < 0.5 * L) return Vcap;
+    if (x <= 0.5 * L + dx * 0.5) return -Vcap;
+    if (x <= 0.625 * L) return -Vcap;
+    return -Vcap - slopeRate * (x - 0.625 * L);
+  });
+  return { x: xArr, M: Menv, V: Venv, maxM: Mallow, maxV: Vmax, Vcap: Vcap };
+}
+
+// Helper: compute comparison object from tab2 vs tab1/envelope (module scope, used by report)
+function buildComparison(tab2Results, capacityEnvelope, spanNum, Ival) {
+  if (!tab2Results || !capacityEnvelope) return null;
+  var env = capacityEnvelope;
+  function computeMaxDeviation(demandArr, capArr, demandX, capX) {
+    var maxPct = 0, maxDev = 0, worstDemand = 0, worstCap = 0;
+    var step = Math.max(1, Math.floor(demandArr.length / 500));
+    for (var i = 0; i < demandArr.length; i += step) {
+      var xi = demandX[i];
+      var dVal = Math.abs(demandArr[i]);
+      var idx = capX.findIndex(function(cx) { return cx >= xi; });
+      var cVal = 0;
+      if (idx <= 0) cVal = Math.abs(capArr[0] || 0);
+      else {
+        var t = (xi - capX[idx-1]) / (capX[idx] - capX[idx-1] || 1);
+        cVal = Math.abs(capArr[idx-1] + t * (capArr[idx] - capArr[idx-1]));
+      }
+      if (cVal > 0 && dVal > cVal) {
+        var pct = ((dVal - cVal) / cVal) * 100;
+        var dev = dVal - cVal;
+        if (dev > maxDev) { maxPct = pct; maxDev = dev; worstDemand = dVal; worstCap = cVal; }
+      }
+    }
+    return { maxPct: maxPct, maxDev: maxDev, worstDemand: worstDemand, worstCap: worstCap };
+  }
+  var mDev = computeMaxDeviation(tab2Results.M, env.M, tab2Results.x, env.x);
+  var vDev = computeMaxDeviation(tab2Results.V, env.V, tab2Results.x, env.x);
+  var deflCap = Array.from({ length: tab2Results.x.length }, function() { return spanNum * 12 / 360; });
+  var dDev = computeMaxDeviation(tab2Results.defl, deflCap, tab2Results.x, tab2Results.x);
+  var mPass = mDev.maxPct < 0.1;
+  var vPass = vDev.maxPct < 0.1;
+  var dPass = dDev.maxPct < 0.1;
+  return {
+    moment:    { cap: env.maxM, demand: tab2Results.maxM, pass: mPass, devPct: mDev.maxPct, maxDev: mDev.maxDev, worstDemand: mDev.worstDemand, worstCap: mDev.worstCap },
+    shear:     { cap: env.maxV, demand: tab2Results.maxV, pass: vPass, devPct: vDev.maxPct, maxDev: vDev.maxDev, worstDemand: vDev.worstDemand, worstCap: vDev.worstCap },
+    deflection:{ cap: tab2Results.maxDefl, demand: tab2Results.maxDefl, pass: dPass, devPct: dDev.maxPct, maxDev: dDev.maxDev, worstDemand: dDev.worstDemand, worstCap: dDev.worstCap },
+    overall: mPass && vPass && dPass,
+  };
+}
+
 // Helper: blank joist state snapshot
 function blankJoistState(name) {
   return {
@@ -2077,6 +2142,8 @@ export default function BarJoistCalculator() {
   const [editingJoistId, setEditingJoistId] = useState(null);
   const [editingJoistName, setEditingJoistName] = useState("");
   const editInputRef = useRef(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportSelectedIds, setReportSelectedIds] = useState([]);
 
   const [activeTab, setActiveTab] = useState("tab1");
   const [projectName, setProjectName] = useState("Untitled Project");
@@ -2375,29 +2442,242 @@ export default function BarJoistCalculator() {
     };
   };
 
-  // --- Generate PDF Report ---
+  // --- Report helpers ---
+  // Open the report selection modal, pre-selecting joists that have data
   const generateReport = () => {
-    if (!joistRecord || !tab1Results || !capacityEnvelope) return;
+    const snap = captureSnapshot();
+    const updatedJoists = joists.map(j => j.id === activeJoistId ? { ...j, ...snap } : j);
+    const withData = updatedJoists.filter(j => j.joistId).map(j => j.id);
+    setReportSelectedIds(withData.length > 0 ? withData : [activeJoistId]);
+    setShowReportModal(true);
+  };
+
+  // Build report data object from a joist snapshot (mirrors old generateReport args)
+  const buildReportData = (snap, joistName) => {
+    // Temporarily restore snapshot into local vars for analysis
+    // We use the analyzeBeam results already baked into the snapshot via tab2Results
+    // For joists not currently active we need to compute results from their snapshot
+    const snapJoistId   = snap.joistId || '';
+    const snapSeries    = snap.joistSeries || 'K';
+    const snapIsKCS     = snapSeries === 'KCS';
+    const snapSpanStr   = snap.span || '';
+    const snapSpanNum   = parseFloat(snapSpanStr) || 0;
+    // Lookup joist record
+    let snapJoistRecord = null;
+    if (snapIsKCS) {
+      snapJoistRecord = KCS_DB[snapJoistId] ? { ...KCS_DB[snapJoistId], isKCS: true } : null;
+    } else {
+      const entry = JOIST_DB[snapJoistId];
+      if (entry && snapSpanNum) {
+        const row = entry.find(r => r[0] === snapSpanNum);
+        if (row) snapJoistRecord = { isKCS: false, total_load_plf: row[1], live_load_l360_plf: row[2] };
+      }
+    }
+    if (!snapJoistRecord) return null;
+
+    // Recompute beam analyses from snapshot
+    const snapE = snap.Eval || 29000;
+    const snapI = snap.Ival || 0;
+    const snapLL = snap.liveLoad || 0;
+    const snapDL = snap.deadLoad || 0;
+    const snapMechUL = snap.mechUL || { w: 0, a: 0, b: 0 };
+    const snapMechPL = snap.mechPL || { P: 0, d: 0 };
+
+    const tab1Loads = [];
+    if (snapIsKCS) {
+      const Mallow = snapJoistRecord.momentCap_kft * 1000;
+      const wEquiv = snapSpanNum > 0 ? 8 * Mallow / (snapSpanNum * snapSpanNum) : 0;
+      tab1Loads.push({ type: 'uniform', w: wEquiv, a: 0, b: snapSpanNum });
+    } else {
+      const wTot = snapLL + snapDL;
+      tab1Loads.push({ type: 'uniform', w: wTot, a: 0, b: snapSpanNum });
+      if (snapMechUL.w > 0) tab1Loads.push({ type: 'uniform', w: snapMechUL.w, a: snapMechUL.a, b: snapMechUL.b });
+      if (snapMechPL.P > 0) tab1Loads.push({ type: 'point', P: snapMechPL.P, d: snapMechPL.d });
+    }
+    const snapTab1Results = analyzeBeam(snapSpanNum, snapE, snapI, tab1Loads);
+
+    // Build capacity envelope
+    let snapMallow, snapVmax;
+    if (snapIsKCS) {
+      snapMallow = snapJoistRecord.momentCap_kft * 1000;
+      snapVmax   = snapJoistRecord.shearCap_lb;
+    } else {
+      snapMallow = snapTab1Results ? snapTab1Results.maxM : 0;
+      snapVmax   = snapTab1Results ? snapTab1Results.maxV : 0;
+    }
+    const snapCapEnv = snapTab1Results ? buildCapacityEnvelope(snapSpanNum, snapMallow, snapVmax, snapIsKCS) : null;
+
+    // Tab 2 loads
+    const snapSpacing  = snap.joistSpacing || 0;
+    const snapRoofDL   = snap.roofDL_psf || 0;
+    const snapRoofLL   = snap.roofLL_psf || 0;
+    const snapLoadType = snap.roofLoadType || 'Live Load';
+    const snapUL2      = snap.uniformLoads2 || [];
+    const snapPL2      = snap.pointLoads2 || [];
+    const snapSDLpsf   = snap.snowDriftL_psf || 0;
+    const snapSDLStart = snap.snowDriftLStart || 0;
+    const snapSDLEnd   = snap.snowDriftLEnd || 0;
+    const snapSDRpsf   = snap.snowDriftR_psf || 0;
+    const snapSDRStart = snap.snowDriftRStart || 0;
+    const snapSDREnd   = snap.snowDriftREnd || 0;
+
+    const tab2Loads = [];
+    if (snapSpacing > 0) {
+      tab2Loads.push({ type: 'uniform', w: snapRoofDL * snapSpacing, a: 0, b: snapSpanNum, loadType: 'Dead Load' });
+      tab2Loads.push({ type: 'uniform', w: snapRoofLL * snapSpacing, a: 0, b: snapSpanNum, loadType: snapLoadType });
+      if (snapSDLpsf > 0) tab2Loads.push({ type: 'triangular', w: snapSDLpsf * snapSpacing, a: snapSDLStart, b: snapSDLEnd, loadType: snapLoadType });
+      if (snapSDRpsf > 0) tab2Loads.push({ type: 'triangular', w: snapSDRpsf * snapSpacing, a: snapSDRStart, b: snapSDREnd, dir: 'right', loadType: snapLoadType });
+      snapUL2.forEach(u => tab2Loads.push({ type: 'uniform', w: u.w * snapSpacing, a: u.a, b: u.b, loadType: u.type }));
+      snapPL2.forEach(pl => tab2Loads.push({ type: 'point', P: pl.P, d: pl.d, loadType: pl.type }));
+    }
+    const snapTab2Results = tab2Loads.length > 0 ? analyzeBeam(snapSpanNum, snapE, snapI, tab2Loads) : null;
+    const snapComparison  = (snapTab2Results && snapCapEnv) ? buildComparison(snapTab2Results, snapCapEnv, snapSpanNum, snapI) : null;
+
+    return {
+      projectName,
+      joistName,
+      joistId: snapJoistId,
+      span:    snapSpanStr,
+      isKCS:   snapIsKCS,
+      joistRecord: snapJoistRecord,
+      liveLoad:    snapLL,
+      deadLoad:    snapDL,
+      Eval:        snapE,
+      Ival:        snapI,
+      mechUL:      snapMechUL,
+      mechPL:      snapMechPL,
+      tab1Results: snapTab1Results,
+      capacityEnvelope: snapCapEnv,
+      tab2Results: snapTab2Results,
+      comparison:  snapComparison,
+      roofDL_psf:       snapRoofDL,
+      roofLL_psf:       snapRoofLL,
+      joistSpacing:     snapSpacing,
+      roofLoadType:     snapLoadType,
+      snowDriftL_psf:   snapSDLpsf,
+      snowDriftLStart:  snapSDLStart,
+      snowDriftLEnd:    snapSDLEnd,
+      snowDriftR_psf:   snapSDRpsf,
+      snowDriftRStart:  snapSDRStart,
+      snowDriftREnd:    snapSDREnd,
+      uniformLoads2: snapUL2,
+      pointLoads2:   snapPL2,
+      reinfInp:      snap.reinfInp || { ...DEFAULTS },
+      scheduleZones: null,
+    };
+  };
+
+  // Generate and open the combined report for selected joists
+  const generateMultiReport = () => {
+    if (reportSelectedIds.length === 0) return;
     try {
-      const html = generateReportHTML({
-        projectName, joistId, span, isKCS, joistRecord,
-        liveLoad, deadLoad, Eval, Ival, mechUL, mechPL,
-        tab1Results, capacityEnvelope,
-        tab2Results, comparison,
-        roofDL_psf, roofLL_psf, joistSpacing, roofLoadType,
-        snowDriftL_psf, snowDriftLStart, snowDriftLEnd,
-        snowDriftR_psf, snowDriftRStart, snowDriftREnd,
-        uniformLoads2, pointLoads2,
-        reinfInp, scheduleZones,
+      const snap = captureSnapshot();
+      const allSnaps = joists.map(j => j.id === activeJoistId ? { ...j, ...snap } : j);
+      const selected = allSnaps.filter(j => reportSelectedIds.includes(j.id));
+
+      let combinedInner = '';
+      selected.forEach(function(j, idx) {
+        const data = buildReportData(j, j.name);
+        if (!data) return;
+        const reportHtml = generateReportHTML(data);
+        // Extract just the <body> content from each report
+        const bodyMatch = reportHtml.match(/<body>([\s\S]*)<\/body>/);
+        const bodyContent = bodyMatch ? bodyMatch[1] : '';
+        // Strip the auto-print script from intermediate reports
+        const stripped = bodyContent.replace(/<script>[\s\S]*?<\/script>/g, '');
+        if (idx > 0) {
+          // Divider page between instances
+          combinedInner +=
+            '<div class="divider-page">' +
+            '<div class="divider-line"></div>' +
+            '<div class="divider-label">' + j.name + '</div>' +
+            '<div class="divider-sub">' + (data.joistId || 'No joist selected') + (data.span ? '  |  Span: ' + data.span + ' ft' : '') + '</div>' +
+            '<div class="divider-line"></div>' +
+            '</div>';
+        }
+        // Instance header banner
+        combinedInner +=
+          '<div class="instance-header">' +
+          '<div class="instance-number">Joist ' + (idx + 1) + ' of ' + selected.length + '</div>' +
+          '<div class="instance-name">' + j.name + '</div>' +
+          '<div class="instance-detail">' + (data.joistId || '--') + (data.span ? '  |  Span: ' + data.span + ' ft' : '') + '  |  Series: ' + (data.isKCS ? 'KCS' : 'K') + '</div>' +
+          '</div>';
+        combinedInner += stripped;
       });
-      if (!html) { alert('Report generation failed: no content returned.'); return; }
-      // Use Blob URL + hidden anchor to bypass popup blockers
-      const blob = new Blob([html], { type: 'text/html' });
+
+      if (!combinedInner) { alert('No valid joist data to print. Select a joist designation first.'); return; }
+
+      const dividerCss =
+        '.divider-page { width:8.5in; min-height:2in; display:flex; flex-direction:column; align-items:center; justify-content:center; page-break-before:always; page-break-after:always; padding:0.5in 1in; }' +
+        '.divider-line { width:100%; border-top:3px solid #1e3a5f; margin:18px 0; }' +
+        '.divider-label { font-size:22pt; font-weight:700; color:#1e3a5f; letter-spacing:0.04em; text-align:center; }' +
+        '.divider-sub { font-size:10pt; color:#64748b; text-align:center; margin-top:6px; font-family:monospace; }' +
+        '.instance-header { width:8.5in; background:#1e3a5f; color:#fff; padding:10px 0.65in; margin-bottom:0; display:flex; align-items:baseline; gap:18px; page-break-after:avoid; }' +
+        '.instance-number { font-size:8pt; color:#93c5fd; text-transform:uppercase; letter-spacing:0.1em; flex-shrink:0; }' +
+        '.instance-name { font-size:14pt; font-weight:700; letter-spacing:0.04em; }' +
+        '.instance-detail { font-size:9pt; color:#93c5fd; font-family:monospace; margin-left:auto; }';
+
+      const now = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+      const coverPage =
+        '<div style="width:8.5in;min-height:4in;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:1in;page-break-after:always;">' +
+        '<div style="font-size:24pt;font-weight:700;color:#1e3a5f;text-align:center;margin-bottom:12px;">Bar Joist Capacity Calculator</div>' +
+        '<div style="font-size:14pt;color:#334155;text-align:center;margin-bottom:8px;">' + projectName + '</div>' +
+        '<div style="font-size:10pt;color:#64748b;text-align:center;margin-bottom:32px;">' + now + '</div>' +
+        '<div style="border-top:2px solid #1e3a5f;width:4in;margin-bottom:24px;"></div>' +
+        '<div style="font-size:11pt;color:#334155;text-align:center;">' + selected.length + ' Joist Instance' + (selected.length > 1 ? 's' : '') + ' Included</div>' +
+        selected.map(function(j, i) {
+          return '<div style="font-size:9pt;color:#64748b;text-align:center;margin-top:4px;">' + (i+1) + '. ' + j.name + (j.joistId ? ' -- ' + j.joistId : '') + '</div>';
+        }).join('') +
+        '</div>';
+
+      const fullHtml =
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>' +
+        '<title>' + projectName + ' -- Bar Joist Report</title>' +
+        '<style>' +
+        '* { box-sizing:border-box; margin:0; padding:0; }' +
+        'body { font-family:Arial,sans-serif; font-size:10pt; color:#1a1a1a; }' +
+        '.page { width:8.5in; min-height:11in; padding:0.6in 0.65in 0.5in; page-break-after:always; position:relative; }' +
+        '.page:last-child { page-break-after:auto; }' +
+        '.hdr { display:flex; justify-content:space-between; border-bottom:2px solid #1e3a5f; padding-bottom:8px; margin-bottom:14px; }' +
+        '.hdr h1 { font-size:14pt; font-weight:700; color:#1e3a5f; }' +
+        '.hdr h2 { font-size:10pt; font-weight:400; color:#555; margin-top:2px; }' +
+        '.hdr-right { text-align:right; font-size:8pt; color:#666; line-height:1.6; }' +
+        '.sec { font-size:9pt; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#fff; background:#1e3a5f; padding:4px 10px; margin:12px 0 6px; }' +
+        'table { width:100%; border-collapse:collapse; font-size:9pt; margin-bottom:8px; }' +
+        'th { background:#e8eef5; color:#1e3a5f; font-weight:700; padding:4px 8px; text-align:left; border:1px solid #b0bec5; }' +
+        'td { padding:3px 8px; border:1px solid #dde3ea; }' +
+        'tr:nth-child(even) td { background:#f7f9fc; }' +
+        '.val { font-family:monospace; font-weight:700; text-align:right; }' +
+        '.pass { color:#166534; font-weight:700; }' +
+        '.fail { color:#991b1b; font-weight:700; }' +
+        '.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:8px; }' +
+        '.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:8px; }' +
+        '.box { border:1px solid #b0bec5; border-radius:4px; padding:6px 10px; background:#f7f9fc; }' +
+        '.box-label { font-size:7pt; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; }' +
+        '.box-val { font-size:13pt; font-weight:700; color:#1e3a5f; font-family:monospace; }' +
+        '.box-unit { font-size:7pt; color:#94a3b8; }' +
+        '.note { font-size:8pt; color:#555; font-style:italic; margin-top:4px; }' +
+        '.overall { border:1px solid; border-radius:4px; padding:8px 12px; margin-top:8px; font-weight:700; }' +
+        '.overall.ok { background:#f0fdf4; border-color:#86efac; color:#166534; }' +
+        '.overall.ng { background:#fef2f2; border-color:#fca5a5; color:#991b1b; }' +
+        '.sched { border:2px solid #1e3a5f; border-radius:4px; overflow:hidden; margin-top:10px; }' +
+        '.sched-title { background:#1e3a5f; color:#fff; text-align:center; font-size:10pt; font-weight:700; padding:6px; letter-spacing:0.15em; }' +
+        '.sched table th { background:#2d4f7a; color:#fff; text-align:center; font-size:8pt; }' +
+        '.sched table td { text-align:center; font-family:monospace; font-weight:700; }' +
+        '.footer { position:absolute; bottom:0.3in; left:0.65in; right:0.65in; display:flex; justify-content:space-between; font-size:7pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }' +
+        '@media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }' +
+        dividerCss +
+        '</style></head><body>' +
+        coverPage +
+        combinedInner +
+        '<script>window.onload=function(){window.print();}<\/script>' +
+        '</body></html>';
+
+      setShowReportModal(false);
+      const blob = new Blob([fullHtml], { type: 'text/html' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
-      a.href     = url;
-      a.target   = '_blank';
-      a.rel      = 'noopener';
+      a.href = url; a.target = '_blank'; a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -3099,6 +3379,85 @@ export default function BarJoistCalculator() {
   return (
     <div style={s.app}>
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+
+      {/* Report Selection Modal */}
+      {showReportModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 12, width: 460, maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
+            {/* Modal header */}
+            <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', letterSpacing: '0.02em' }}>Generate Report</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Select joist instances to include</div>
+              </div>
+              <button onClick={() => setShowReportModal(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: 4 }}>x</button>
+            </div>
+
+            {/* Select all toggle */}
+            <div style={{ padding: '10px 24px', borderBottom: '1px solid #273449', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input
+                type="checkbox"
+                id="select-all-joists"
+                checked={reportSelectedIds.length === joists.length}
+                onChange={e => setReportSelectedIds(e.target.checked ? joists.map(j => j.id) : [])}
+                style={{ width: 15, height: 15, accentColor: '#38bdf8', cursor: 'pointer' }}
+              />
+              <label htmlFor="select-all-joists" style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', cursor: 'pointer', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Select All ({joists.length})
+              </label>
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>
+                {reportSelectedIds.length} selected
+              </span>
+            </div>
+
+            {/* Joist list */}
+            <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
+              {joists.map((j, idx) => {
+                const checked = reportSelectedIds.includes(j.id);
+                const snap = j.id === activeJoistId ? { ...j, ...captureSnapshot() } : j;
+                const hasData = !!(snap.joistId);
+                return (
+                  <label key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 24px', cursor: 'pointer', background: checked ? 'rgba(56,189,248,0.05)' : 'transparent', borderLeft: checked ? '2px solid #38bdf8' : '2px solid transparent' }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => setReportSelectedIds(prev => e.target.checked ? [...prev, j.id] : prev.filter(id => id !== j.id))}
+                      style={{ width: 15, height: 15, accentColor: '#38bdf8', cursor: 'pointer', flexShrink: 0 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: checked ? '#e2e8f0' : '#94a3b8' }}>{j.name}</div>
+                      <div style={{ fontSize: 11, color: '#475569', marginTop: 1, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {hasData ? snap.joistId + (snap.span ? '  |  ' + snap.span + ' ft' : '') + '  |  ' + (snap.joistSeries || 'K') + '-Series' : 'No joist selected'}
+                      </div>
+                    </div>
+                    {!hasData && (
+                      <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Empty</span>
+                    )}
+                    {j.id === activeJoistId && (
+                      <span style={{ fontSize: 10, color: '#38bdf8', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Active</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Footer actions */}
+            <div style={{ padding: '14px 24px', borderTop: '1px solid #334155', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowReportModal(false)}
+                style={{ padding: '8px 20px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontFamily: "'IBM Plex Sans', sans-serif" }}
+              >Cancel</button>
+              <button
+                onClick={generateMultiReport}
+                disabled={reportSelectedIds.length === 0}
+                style={{ padding: '8px 22px', fontSize: 12, fontWeight: 700, borderRadius: 6, border: 'none', background: reportSelectedIds.length > 0 ? '#38bdf8' : '#334155', color: reportSelectedIds.length > 0 ? '#0f172a' : '#475569', cursor: reportSelectedIds.length > 0 ? 'pointer' : 'not-allowed', fontFamily: "'IBM Plex Sans', sans-serif", letterSpacing: '0.04em' }}
+              >
+                Print Report ({reportSelectedIds.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Hidden file input for Open */}
       <input
