@@ -2142,6 +2142,17 @@ export default function BarJoistCalculator() {
   const [eOverridden, setEOverridden] = useState(false);
   const [iOverridden, setIOverridden] = useState(false);
 
+  // Prevent mouse wheel from changing number input values
+  useEffect(() => {
+    const handler = (e) => {
+      if (document.activeElement && document.activeElement.type === 'number') {
+        document.activeElement.blur();
+      }
+    };
+    document.addEventListener('wheel', handler, { passive: true });
+    return () => document.removeEventListener('wheel', handler);
+  }, []);
+
   // Auto-populate when joist record changes
   useEffect(() => {
     if (joistRecord) {
