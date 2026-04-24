@@ -2153,6 +2153,19 @@ export default function BarJoistCalculator() {
     return () => document.removeEventListener('wheel', handler);
   }, []);
 
+  // Warn before page refresh/close if any joist has data entered
+  useEffect(() => {
+    const handler = (e) => {
+      const hasData = joists.some(j => j.id === activeJoistId ? joistId : j.joistId);
+      if (hasData || joistId) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [joists, activeJoistId, joistId]);
+
   // Auto-populate when joist record changes
   useEffect(() => {
     if (joistRecord) {
@@ -2301,49 +2314,66 @@ export default function BarJoistCalculator() {
   const removePL = (i) => setPointLoads2(pointLoads2.filter((_, j) => j !== i));
 
   // --- Save / Open Project ---
-  const getProjectData = () => ({
-    version: 1,
-    projectName,
-    activeTab,
+  // Build a single-joist save block from a snapshot object
+  const snapshotToSaveBlock = (snap) => ({
+    activeTab: snap.activeTab || 'tab1',
     tab1: {
-      joistSeries, joistId, span,
-      liveLoad, deadLoad, Eval, Ival,
-      llOverridden, dlOverridden, eOverridden, iOverridden,
-      mechUL, mechPL,
+      joistSeries:   snap.joistSeries,   joistId:  snap.joistId,  span: snap.span,
+      liveLoad:      snap.liveLoad,      deadLoad: snap.deadLoad,
+      Eval:          snap.Eval,          Ival:     snap.Ival,
+      llOverridden:  snap.llOverridden,  dlOverridden: snap.dlOverridden,
+      eOverridden:   snap.eOverridden,   iOverridden:  snap.iOverridden,
+      mechUL:        snap.mechUL,        mechPL:   snap.mechPL,
     },
     tab2: {
-      roofDL_psf, roofLL_psf, joistSpacing, roofLoadType,
-      snowDriftL_psf, snowDriftLStart, snowDriftLEnd,
-      snowDriftR_psf, snowDriftRStart, snowDriftREnd,
-      uniformLoads2,
-      pointLoads2,
+      roofDL_psf:       snap.roofDL_psf,      roofLL_psf:    snap.roofLL_psf,
+      joistSpacing:     snap.joistSpacing,     roofLoadType:  snap.roofLoadType,
+      snowDriftL_psf:   snap.snowDriftL_psf,   snowDriftLStart: snap.snowDriftLStart,
+      snowDriftLEnd:    snap.snowDriftLEnd,     snowDriftR_psf:  snap.snowDriftR_psf,
+      snowDriftRStart:  snap.snowDriftRStart,   snowDriftREnd:   snap.snowDriftREnd,
+      uniformLoads2:    snap.uniformLoads2,     pointLoads2:     snap.pointLoads2,
     },
     tab3: {
-      // All user-editable Tab 3 inputs (read-only demand fields excluded -- they recompute from Tab 2)
-      fp:               reinfInp.fp,
-      l1:               reinfInp.l1,
-      l2:               reinfInp.l2,
-      braced:           reinfInp.braced,
-      webMemberType:    reinfInp.webMemberType,
-      webAngleIdx:      reinfInp.webAngleIdx,
-      webDia:           reinfInp.webDia,
-      webFy:            reinfInp.webFy,
-      webE:             reinfInp.webE,
-      webFu:            reinfInp.webFu,
-      weldSize:         reinfInp.weldSize,
-      weldLen:          reinfInp.weldLen,
-      U:                reinfInp.U,
-      chordDia:         reinfInp.chordDia,
-      chordFy:          reinfInp.chordFy,
-      chordFu:          reinfInp.chordFu,
-      chordE:           reinfInp.chordE,
-      chordWeldSpacing: reinfInp.chordWeldSpacing,
-      chordU:           reinfInp.chordU,
-      deflLimit:        reinfInp.deflLimit,
-      webLocked:        reinfWebLocked,
-      chordLocked:      reinfChordLocked,
+      fp:               snap.reinfInp?.fp,
+      l1:               snap.reinfInp?.l1,
+      l2:               snap.reinfInp?.l2,
+      braced:           snap.reinfInp?.braced,
+      webMemberType:    snap.reinfInp?.webMemberType,
+      webAngleIdx:      snap.reinfInp?.webAngleIdx,
+      webDia:           snap.reinfInp?.webDia,
+      webFy:            snap.reinfInp?.webFy,
+      webE:             snap.reinfInp?.webE,
+      webFu:            snap.reinfInp?.webFu,
+      weldSize:         snap.reinfInp?.weldSize,
+      weldLen:          snap.reinfInp?.weldLen,
+      U:                snap.reinfInp?.U,
+      chordDia:         snap.reinfInp?.chordDia,
+      chordFy:          snap.reinfInp?.chordFy,
+      chordFu:          snap.reinfInp?.chordFu,
+      chordE:           snap.reinfInp?.chordE,
+      chordWeldSpacing: snap.reinfInp?.chordWeldSpacing,
+      chordU:           snap.reinfInp?.chordU,
+      deflLimit:        snap.reinfInp?.deflLimit,
+      webLocked:        snap.reinfWebLocked,
+      chordLocked:      snap.reinfChordLocked,
     },
   });
+
+  const getProjectData = () => {
+    // First save the current editor state back into the active joist snapshot
+    const currentSnap = captureSnapshot();
+    const allJoists = joists.map(j =>
+      j.id === activeJoistId
+        ? { id: j.id, name: j.name, ...snapshotToSaveBlock(currentSnap) }
+        : { id: j.id, name: j.name, ...snapshotToSaveBlock(j) }
+    );
+    return {
+      version: 2,
+      projectName,
+      activeJoistId,
+      joists: allJoists,
+    };
+  };
 
   // --- Generate PDF Report ---
   const generateReport = () => {
@@ -2390,6 +2420,76 @@ export default function BarJoistCalculator() {
     URL.revokeObjectURL(url);
   };
 
+  const restoreJoistBlock = (d, doSetActive) => {
+    if (d.tab1) {
+      const t = d.tab1;
+      if (t.joistSeries) setJoistSeries(t.joistSeries);
+      if (t.joistId !== undefined) setJoistId(t.joistId);
+      if (t.span !== undefined) setSpan(t.span);
+      setTimeout(() => {
+        if (t.liveLoad    !== undefined) setLiveLoad(t.liveLoad);
+        if (t.deadLoad    !== undefined) setDeadLoad(t.deadLoad);
+        if (t.Eval        !== undefined) setEval(t.Eval);
+        if (t.Ival        !== undefined) setIval(t.Ival);
+        if (t.llOverridden !== undefined) setLlOverridden(t.llOverridden);
+        if (t.dlOverridden !== undefined) setDlOverridden(t.dlOverridden);
+        if (t.eOverridden  !== undefined) setEOverridden(t.eOverridden);
+        if (t.iOverridden  !== undefined) setIOverridden(t.iOverridden);
+        if (t.mechUL) setMechUL(t.mechUL);
+        if (t.mechPL) setMechPL(t.mechPL);
+      }, 100);
+    }
+    if (d.tab2) {
+      const t = d.tab2;
+      if (t.roofDL_psf     !== undefined) setRoofDL_psf(t.roofDL_psf);
+      if (t.roofLL_psf     !== undefined) setRoofLL_psf(t.roofLL_psf);
+      if (t.joistSpacing   !== undefined) setJoistSpacing(t.joistSpacing);
+      if (t.roofLoadType)                 setRoofLoadType(t.roofLoadType);
+      if (t.snowDriftL_psf   !== undefined) setSnowDriftL_psf(t.snowDriftL_psf);
+      if (t.snowDriftLStart  !== undefined) setSnowDriftLStart(t.snowDriftLStart);
+      if (t.snowDriftLEnd    !== undefined) setSnowDriftLEnd(t.snowDriftLEnd);
+      if (t.snowDriftR_psf   !== undefined) setSnowDriftR_psf(t.snowDriftR_psf);
+      if (t.snowDriftRStart  !== undefined) setSnowDriftRStart(t.snowDriftRStart);
+      if (t.snowDriftREnd    !== undefined) setSnowDriftREnd(t.snowDriftREnd);
+      if (t.snowDrift_psf !== undefined && t.snowDriftL_psf === undefined) {
+        setSnowDriftL_psf(t.snowDrift_psf);
+        if (t.snowDriftStart !== undefined) setSnowDriftLStart(t.snowDriftStart);
+        if (t.snowDriftEnd   !== undefined) setSnowDriftLEnd(t.snowDriftEnd);
+      }
+      if (t.uniformLoads2) setUniformLoads2(t.uniformLoads2);
+      if (t.pointLoads2)   setPointLoads2(t.pointLoads2);
+    }
+    if (d.tab3) {
+      const t = d.tab3;
+      setReinfInp(prev => ({
+        ...prev,
+        ...(t.fp               !== undefined && { fp:               t.fp }),
+        ...(t.l1               !== undefined && { l1:               t.l1 }),
+        ...(t.l2               !== undefined && { l2:               t.l2 }),
+        ...(t.braced           !== undefined && { braced:           t.braced }),
+        ...(t.webMemberType    !== undefined && { webMemberType:    t.webMemberType }),
+        ...(t.webAngleIdx      !== undefined && { webAngleIdx:      t.webAngleIdx }),
+        ...(t.webDia           !== undefined && { webDia:           t.webDia }),
+        ...(t.webFy            !== undefined && { webFy:            t.webFy }),
+        ...(t.webE             !== undefined && { webE:             t.webE }),
+        ...(t.webFu            !== undefined && { webFu:            t.webFu }),
+        ...(t.weldSize         !== undefined && { weldSize:         t.weldSize }),
+        ...(t.weldLen          !== undefined && { weldLen:          t.weldLen }),
+        ...(t.U                !== undefined && { U:                t.U }),
+        ...(t.chordDia         !== undefined && { chordDia:         t.chordDia }),
+        ...(t.chordFy          !== undefined && { chordFy:          t.chordFy }),
+        ...(t.chordFu          !== undefined && { chordFu:          t.chordFu }),
+        ...(t.chordE           !== undefined && { chordE:           t.chordE }),
+        ...(t.chordWeldSpacing !== undefined && { chordWeldSpacing: t.chordWeldSpacing }),
+        ...(t.chordU           !== undefined && { chordU:           t.chordU }),
+        ...(t.deflLimit        !== undefined && { deflLimit:        t.deflLimit }),
+      }));
+      if (t.webLocked   !== undefined) setReinfWebLocked(t.webLocked);
+      if (t.chordLocked !== undefined) setReinfChordLocked(t.chordLocked);
+    }
+    if (doSetActive && d.activeTab) setActiveTab(d.activeTab);
+  };
+
   const openProject = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2398,85 +2498,94 @@ export default function BarJoistCalculator() {
       try {
         const d = JSON.parse(ev.target.result);
         if (d.projectName !== undefined) setProjectName(d.projectName);
-        if (d.activeTab) setActiveTab(d.activeTab);
-        // Tab 1
-        if (d.tab1) {
-          const t = d.tab1;
-          if (t.joistSeries) setJoistSeries(t.joistSeries);
-          if (t.joistId !== undefined) setJoistId(t.joistId);
-          if (t.span !== undefined) setSpan(t.span);
-          // Defer setting overridden values so they don't get clobbered by auto-populate
-          setTimeout(() => {
-            if (t.liveLoad !== undefined) setLiveLoad(t.liveLoad);
-            if (t.deadLoad !== undefined) setDeadLoad(t.deadLoad);
-            if (t.Eval !== undefined) setEval(t.Eval);
-            if (t.Ival !== undefined) setIval(t.Ival);
-            if (t.llOverridden !== undefined) setLlOverridden(t.llOverridden);
-            if (t.dlOverridden !== undefined) setDlOverridden(t.dlOverridden);
-            if (t.eOverridden !== undefined) setEOverridden(t.eOverridden);
-            if (t.iOverridden !== undefined) setIOverridden(t.iOverridden);
-            if (t.mechUL) setMechUL(t.mechUL);
-            if (t.mechPL) setMechPL(t.mechPL);
-          }, 100);
-        }
-        // Tab 2
-        if (d.tab2) {
-          const t = d.tab2;
-          if (t.roofDL_psf !== undefined) setRoofDL_psf(t.roofDL_psf);
-          if (t.roofLL_psf !== undefined) setRoofLL_psf(t.roofLL_psf);
-          if (t.joistSpacing !== undefined) setJoistSpacing(t.joistSpacing);
-          if (t.roofLoadType) setRoofLoadType(t.roofLoadType);
-          if (t.snowDriftL_psf !== undefined) setSnowDriftL_psf(t.snowDriftL_psf);
-          if (t.snowDriftLStart !== undefined) setSnowDriftLStart(t.snowDriftLStart);
-          if (t.snowDriftLEnd !== undefined) setSnowDriftLEnd(t.snowDriftLEnd);
-          if (t.snowDriftR_psf !== undefined) setSnowDriftR_psf(t.snowDriftR_psf);
-          if (t.snowDriftRStart !== undefined) setSnowDriftRStart(t.snowDriftRStart);
-          if (t.snowDriftREnd !== undefined) setSnowDriftREnd(t.snowDriftREnd);
-          // Legacy single drift support
-          if (t.snowDrift_psf !== undefined && t.snowDriftL_psf === undefined) {
-            setSnowDriftL_psf(t.snowDrift_psf);
-            if (t.snowDriftStart !== undefined) setSnowDriftLStart(t.snowDriftStart);
-            if (t.snowDriftEnd !== undefined) setSnowDriftLEnd(t.snowDriftEnd);
-          }
-          if (t.uniformLoads2) setUniformLoads2(t.uniformLoads2);
-          if (t.pointLoads2) setPointLoads2(t.pointLoads2);
-        }
-        // Tab 3
-        if (d.tab3) {
-          const t = d.tab3;
-          setReinfInp(prev => ({
-            ...prev,
-            ...(t.fp               !== undefined && { fp:               t.fp }),
-            ...(t.l1               !== undefined && { l1:               t.l1 }),
-            ...(t.l2               !== undefined && { l2:               t.l2 }),
-            ...(t.braced           !== undefined && { braced:           t.braced }),
-            ...(t.webMemberType    !== undefined && { webMemberType:    t.webMemberType }),
-            ...(t.webAngleIdx      !== undefined && { webAngleIdx:      t.webAngleIdx }),
-            ...(t.webDia           !== undefined && { webDia:           t.webDia }),
-            ...(t.webFy            !== undefined && { webFy:            t.webFy }),
-            ...(t.webE             !== undefined && { webE:             t.webE }),
-            ...(t.webFu            !== undefined && { webFu:            t.webFu }),
-            ...(t.weldSize         !== undefined && { weldSize:         t.weldSize }),
-            ...(t.weldLen          !== undefined && { weldLen:          t.weldLen }),
-            ...(t.U                !== undefined && { U:                t.U }),
-            ...(t.chordDia         !== undefined && { chordDia:         t.chordDia }),
-            ...(t.chordFy          !== undefined && { chordFy:          t.chordFy }),
-            ...(t.chordFu          !== undefined && { chordFu:          t.chordFu }),
-            ...(t.chordE           !== undefined && { chordE:           t.chordE }),
-            ...(t.chordWeldSpacing !== undefined && { chordWeldSpacing: t.chordWeldSpacing }),
-            ...(t.chordU           !== undefined && { chordU:           t.chordU }),
-            ...(t.deflLimit        !== undefined && { deflLimit:        t.deflLimit }),
-          }));
-          if (t.webLocked   !== undefined) setReinfWebLocked(t.webLocked);
-          if (t.chordLocked !== undefined) setReinfChordLocked(t.chordLocked);
+
+        if (d.version === 2 && Array.isArray(d.joists) && d.joists.length > 0) {
+          // v2: multi-joist format
+          const targetId = d.activeJoistId || d.joists[0].id;
+          const activeJoistData = d.joists.find(j => j.id === targetId) || d.joists[0];
+
+          // Rebuild joists array as snapshots (non-active ones stored as plain objects)
+          const restoredJoists = d.joists.map(j => {
+            const snap = blankJoistState(j.name);
+            snap.id = j.id || snap.id;
+            // Embed saved tab data directly into snapshot fields
+            if (j.tab1) {
+              const t = j.tab1;
+              if (t.joistSeries  !== undefined) snap.joistSeries   = t.joistSeries;
+              if (t.joistId      !== undefined) snap.joistId       = t.joistId;
+              if (t.span         !== undefined) snap.span          = t.span;
+              if (t.liveLoad     !== undefined) snap.liveLoad      = t.liveLoad;
+              if (t.deadLoad     !== undefined) snap.deadLoad      = t.deadLoad;
+              if (t.Eval         !== undefined) snap.Eval          = t.Eval;
+              if (t.Ival         !== undefined) snap.Ival          = t.Ival;
+              if (t.llOverridden !== undefined) snap.llOverridden  = t.llOverridden;
+              if (t.dlOverridden !== undefined) snap.dlOverridden  = t.dlOverridden;
+              if (t.eOverridden  !== undefined) snap.eOverridden   = t.eOverridden;
+              if (t.iOverridden  !== undefined) snap.iOverridden   = t.iOverridden;
+              if (t.mechUL)                     snap.mechUL        = t.mechUL;
+              if (t.mechPL)                     snap.mechPL        = t.mechPL;
+            }
+            if (j.tab2) {
+              const t = j.tab2;
+              if (t.roofDL_psf      !== undefined) snap.roofDL_psf      = t.roofDL_psf;
+              if (t.roofLL_psf      !== undefined) snap.roofLL_psf      = t.roofLL_psf;
+              if (t.joistSpacing    !== undefined) snap.joistSpacing    = t.joistSpacing;
+              if (t.roofLoadType)                  snap.roofLoadType    = t.roofLoadType;
+              if (t.snowDriftL_psf  !== undefined) snap.snowDriftL_psf  = t.snowDriftL_psf;
+              if (t.snowDriftLStart !== undefined) snap.snowDriftLStart = t.snowDriftLStart;
+              if (t.snowDriftLEnd   !== undefined) snap.snowDriftLEnd   = t.snowDriftLEnd;
+              if (t.snowDriftR_psf  !== undefined) snap.snowDriftR_psf  = t.snowDriftR_psf;
+              if (t.snowDriftRStart !== undefined) snap.snowDriftRStart = t.snowDriftRStart;
+              if (t.snowDriftREnd   !== undefined) snap.snowDriftREnd   = t.snowDriftREnd;
+              if (t.uniformLoads2)                 snap.uniformLoads2   = t.uniformLoads2;
+              if (t.pointLoads2)                   snap.pointLoads2     = t.pointLoads2;
+            }
+            if (j.tab3) {
+              const t = j.tab3;
+              snap.reinfInp = {
+                ...snap.reinfInp,
+                ...(t.fp               !== undefined && { fp:               t.fp }),
+                ...(t.l1               !== undefined && { l1:               t.l1 }),
+                ...(t.l2               !== undefined && { l2:               t.l2 }),
+                ...(t.braced           !== undefined && { braced:           t.braced }),
+                ...(t.webMemberType    !== undefined && { webMemberType:    t.webMemberType }),
+                ...(t.webAngleIdx      !== undefined && { webAngleIdx:      t.webAngleIdx }),
+                ...(t.webDia           !== undefined && { webDia:           t.webDia }),
+                ...(t.webFy            !== undefined && { webFy:            t.webFy }),
+                ...(t.webE             !== undefined && { webE:             t.webE }),
+                ...(t.webFu            !== undefined && { webFu:            t.webFu }),
+                ...(t.weldSize         !== undefined && { weldSize:         t.weldSize }),
+                ...(t.weldLen          !== undefined && { weldLen:          t.weldLen }),
+                ...(t.U                !== undefined && { U:                t.U }),
+                ...(t.chordDia         !== undefined && { chordDia:         t.chordDia }),
+                ...(t.chordFy          !== undefined && { chordFy:          t.chordFy }),
+                ...(t.chordFu          !== undefined && { chordFu:          t.chordFu }),
+                ...(t.chordE           !== undefined && { chordE:           t.chordE }),
+                ...(t.chordWeldSpacing !== undefined && { chordWeldSpacing: t.chordWeldSpacing }),
+                ...(t.chordU           !== undefined && { chordU:           t.chordU }),
+                ...(t.deflLimit        !== undefined && { deflLimit:        t.deflLimit }),
+              };
+              if (t.webLocked   !== undefined) snap.reinfWebLocked   = t.webLocked;
+              if (t.chordLocked !== undefined) snap.reinfChordLocked = t.chordLocked;
+            }
+            if (j.activeTab) snap.activeTab = j.activeTab;
+            return snap;
+          });
+
+          setJoists(restoredJoists);
+          setActiveJoistId(activeJoistData.id || restoredJoists[0].id);
+          restoreJoistBlock(activeJoistData, true);
+
+        } else {
+          // v1 legacy: single-joist file -- replace current active joist
+          restoreJoistBlock(d, true);
         }
       } catch (err) {
-        alert("Could not read project file. Make sure it is a valid .bjc file.");
+        alert('Could not read project file. Make sure it is a valid .bjc file.');
       }
     };
     reader.readAsText(file);
-    // Reset input so same file can be re-opened
-    e.target.value = "";
+    e.target.value = '';
   };
 
   // Tab 2: Analyze using ONLY Tab 2 loads (ASD: D + L)
