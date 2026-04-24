@@ -2916,8 +2916,8 @@ export default function BarJoistCalculator() {
       flexDirection: "column",
     },
     sidebar: {
-      width: 400,
-      minWidth: 400,
+      width: 300,
+      minWidth: 300,
       background: "#111827",
       borderRight: "1px solid #1e293b",
       display: "flex",
@@ -3135,7 +3135,7 @@ export default function BarJoistCalculator() {
                 fontSize: 13,
                 fontWeight: 600,
                 outline: "none",
-                width: 400,
+                width: 300,
                 fontFamily: "inherit",
               }}
               onFocus={e => e.target.style.borderColor = "#38bdf8"}
